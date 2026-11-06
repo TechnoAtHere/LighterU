@@ -1,121 +1,157 @@
 <p align="center">
-  <img src="src/assets/logo.svg" width="96" alt="LighterU logo" />
+  <img src="src/assets/logo.svg" width="104" alt="LighterU logo" />
 </p>
 
 <h1 align="center">LighterU</h1>
 
-<p align="center"><strong>更轻、更快、链条更短地将文件转换为 AI 可读形式的 Windows 桌面端 MinerU 解析客户端</strong></p>
+<p align="center"><strong>A lighter, faster, shorter-path Windows desktop client that turns files into AI-readable formats — powered by MinerU.</strong></p>
 
 <p align="center">
-  <img alt="platform" src="https://img.shields.io/badge/platform-Windows-0078D6" />
-  <img alt="license" src="https://img.shields.io/badge/license-MIT-blue" />
+  <a href="https://github.com/TechnoAtHere/LighterU"><img alt="GitHub" src="https://img.shields.io/badge/GitHub-LighterU-181717?style=flat-square" /></a>
+  <a href="https://gitee.com/ATWWW/LighterU"><img alt="Gitee" src="https://img.shields.io/badge/Gitee-LighterU-C71D23?style=flat-square" /></a>
+  <img alt="platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?style=flat-square" />
+  <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square" />
+  <img alt="Vue" src="https://img.shields.io/badge/Vue-3-42B883?style=flat-square" />
+  <img alt="version" src="https://img.shields.io/badge/version-0.3.0-blue?style=flat-square" />
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-3DA639?style=flat-square" />
 </p>
 
 <p align="center">
-  <a href="https://github.com/TechnoAtHere/LighterU">GitHub</a> ·
-  <a href="https://gitee.com/ATWWW/LighterU">Gitee</a>
+  <a href="README.zh-CN.md">简体中文</a> · <a href="README.md">English</a>
 </p>
+
+> **Unofficial notice**: LighterU is a third-party desktop client for MinerU (mineru.net / OpenDataLab). It is not affiliated with, or endorsed by, MinerU / OpenDataLab and does not include their source code. Using the API is subject to the official terms and quotas.
 
 ---
 
-## 功能介绍
+## 📑 Table of Contents
 
-### 右键解析（最短链路）
+- [✨ Highlights](#highlights)
+- [🧭 Features](#features)
+- [📦 Install & Usage](#usage)
+- [🔐 Data & Privacy](#privacy)
+- [🛠️ Build from Source](#build)
+- [📄 License & Credits](#license)
 
-在资源管理器中对文件点右键 → **直接解析**，只弹出轻量进度窗，解析完成后按设置落盘。进度窗内可一键 **转到工作站**；即使主程序未运行，右键也会拉起后台进程完成解析。
+<a id="highlights"></a>
+## ✨ Highlights
 
-### 工作站解析（批量与可管理）
-
-导入文件或整个文件夹 → **全部开始**。支持队列并发、失败重试、历史任务、实时日志与通知；任务行可单独重跑、修改输出目录、打开结果文件夹。
-
-- 输出格式多选：**Markdown / JSON / DOCX / HTML / 图片**。
-- DOCX 自带图片；未勾选「图片」时，图片描述读完会自动删除单独的 `images/`（Markdown「两者都有」模式除外）。
-
-### 图片解析（把图也变成可读文本）
-
-解析完成后，对单个文件点行内 **「图」** 按钮即可用当前提示词方案重跑图片描述：
-
-- 点击即变**蓝色**（已排队）；若文件尚未解析完，会在解析完成后自动执行；
-- 完成后变**绿色**（失败保持蓝色，可再次点击重试）；
-- 需要先配置一个 OpenAI 兼容的多模态服务（Base URL / 模型 / API Key）。
-
-## 使用说明
-
-### 安装与首次配置
-
-1. 前往 **Releases** 页面下载 `LighterU_<version>_x64-setup.exe` 并安装（Windows 10/11，需 WebView2）。
-2. 首次启动后二选一：
-   - **精准解析**：在「设置 → MinerU」填入 [mineru.net](https://mineru.net) 的 Token（有效期 90 天）；
-   - **Agent 轻量解析**：无需 Token，按 IP 限频，单文件 ≤10MB / ≤20 页，仅输出 Markdown。
-3. 如需图片解析，在「设置 → 多模态」填入 OpenAI 兼容服务的 Base URL、模型名与 API Key。
-
-### 常见问题
-
-#### 软件本身
-
-| 现象 | 快速解决 |
+| Highlights | Details |
 |---|---|
-| 双击 exe 白屏或无窗口 | 请使用安装包，或 `target/release/lighteru.exe`（发布版已内嵌前端）；开发期请用 `npm run tauri dev`，勿直接双击 `target/debug` 下的裸 exe。确认已安装 WebView2 |
-| 右键没有「直接解析」 | 先启动一次应用完成菜单注册；再到「设置 → 输出 → 右键入口」确认「启用右键菜单」已勾选 |
-| 图片解析按钮一直蓝色 | 检查「设置 → 多模态」是否已配置；确认该文件已解析完成；查看日志面板 |
-| 找不到输出文件 | 任务行点「打开」直接打开输出目录；默认在源文件同目录或设置中的目录 |
-| 杀软报 `build-script-build` 木马 | Tauri 构建脚本的无签名启发式误报；将 `src-tauri/target/` 加入信任区后重试 |
-| Token 保存失败 | 仅 Windows 支持 DPAPI 加密；确认在 Windows 桌面环境运行 |
+| ⚡ **Shortest path** | Right-click a file in Explorer; only a lightweight progress window appears. |
+| 🖥️ **Two entry points** | Single-file right-click and batch workbench, with independent settings. |
+| 🧩 **Multi-format** | Markdown · JSON · DOCX · HTML · images, selectable. |
+| 🖼️ **Images to text** | Works with any OpenAI-compatible multimodal endpoint to generate image descriptions. |
+| 🔒 **Local-first** | No self-hosted server, no telemetry; secrets encrypted with Windows DPAPI. |
 
-#### MinerU 服务
+<a id="features"></a>
+## 🧭 Features
 
-| 现象 | 快速解决 |
+### 🖱️ Right-click parsing (shortest path)
+
+Right-click a file in Explorer → **Parse directly**. Only a lightweight progress window appears; results are written according to your settings. You can jump to the workbench from the window. If the app isn't running, the right-click action starts the background process and parses anyway.
+
+### 🖥️ Workbench parsing (batch & manageable)
+
+Import files or a folder → **Start all**. Queue concurrency, retries, history, live logs, and notifications; each row can be re-run, change its output folder, or open the result folder.
+
+- 📦 Output formats: **Markdown / JSON / DOCX / HTML / images**.
+- 🖼️ DOCX embeds images; when **Images** is unchecked, the standalone `images/` folder is deleted after captioning (except Markdown "both" mode).
+
+### 🖼️ Image captioning (turn images into text)
+
+After parsing, click the **“图” (Image)** button on a file to re-run captioning with the current prompt preset:
+
+- 🔵 Turns **blue** on click (queued); if the file isn't parsed yet, it runs automatically when parsing completes.
+- 🟢 Turns **green** when done (stays blue on failure; click again to retry).
+- 🔑 Requires an OpenAI-compatible multimodal endpoint (Base URL / model / API key).
+
+<a id="usage"></a>
+## 📦 Install & Usage
+
+### 1️⃣ Install
+
+Download `LighterU_<version>_x64-setup.exe` from **Releases**.
+
+> Windows 10/11 with WebView2 (usually preinstalled on Windows 11).
+
+### 2️⃣ First-run setup
+
+1. **Parsing service** (choose one)
+   - **Precise API**: set your [mineru.net](https://mineru.net) Token in Settings → MinerU (valid for 90 days).
+   - **Agent API**: no token; IP rate-limited; single file ≤10MB / ≤20 pages; Markdown only.
+2. **Image captioning** (optional): set the OpenAI-compatible Base URL, model, and API key in Settings → Image Captioning.
+3. **Output preferences**: choose default formats, folder, and image retention in Settings → Output.
+
+### 3️⃣ FAQ
+
+#### 🧩 App
+
+| Symptom | Quick fix |
 |---|---|
-| Token 无效 / 过期（A0202） | 到 mineru.net 重新申请 Token 并保存；Token 有效期 90 天 |
-| 403 Forbidden | 检查 Token 是否已保存、是否混入空格/换行；检查 API 地址 |
-| 429 / 排队 / 限流 | 稍后重试；Agent 模式按 IP 限频，精准模式有每日/每分钟配额 |
-| 文件超限 | 精准：≤200MB、≤200 页；Agent：≤10MB、≤20 页。超限请拆分或压缩 |
-| 解析结果乱序或缺内容 | 复杂版面/竖排/公式受模型能力限制；可切换模型版本（如 `vlm`）重试 |
+| Blank window when double-clicking the exe | Use the installer or `target/release/lighteru.exe` (release builds embed the frontend); during development use `npm run tauri dev`, not the bare exe under `target/debug` |
+| No “Parse directly” in the context menu | Launch the app once to register the menu; then check Settings → Output → Right-click entry → “Enable context menu” |
+| Image button stays blue | Check Settings → Image Captioning; make sure the file has finished parsing; check the log panel |
+| Can't find the output | Click “Open” on the task row; output defaults to the source folder or the configured folder |
+| Antivirus flags `build-script-build` | False positive for Tauri's unsigned build script; trust `src-tauri/target/` and retry |
+| Token save fails | DPAPI is Windows-only; run the app on Windows desktop |
 
-### 已知限制
+#### ☁️ MinerU
 
-#### 软件本身
+| Symptom | Quick fix |
+|---|---|
+| Token invalid / expired (A0202) | Re-issue a token on mineru.net and save it; tokens are valid for 90 days |
+| 403 Forbidden | Check the token is saved and has no spaces/newlines; verify the API base URL |
+| 429 / queuing / rate limit | Retry later; Agent mode is IP rate-limited; the precise API has daily and per-minute quotas |
+| File too large | Precise: ≤200MB, ≤200 pages; Agent: ≤10MB, ≤20 pages. Split or compress the file |
+| Garbled or missing content | Complex layouts, vertical text, and formulas are limited by the model; try another model version (e.g. `vlm`) |
 
-- 仅支持 **Windows 10/11**，暂无 macOS / Linux 构建。
-- 右键菜单需**先启动一次应用**完成注册；卸载时自动移除。
-- 图片解析依赖外部 OpenAI 兼容服务，需自备 Key，费用由该服务计费。
-- 单机本地应用，无云同步或多端同步。
+### 4️⃣ Known limitations
 
-#### MinerU 服务
+#### 🧩 App
 
-- 配额、频率、文件大小/页数限制以官方说明为准，可能调整。
-- Token 有效期 **90 天**，到期需重新申请。
-- 解析质量因文档而异，不保证 100% 版式还原。
-- Agent 轻量模式仅输出 Markdown、单文件，限制更严格。
+- 🪟 Windows 10/11 only; no macOS/Linux builds yet.
+- 🖱️ The context menu requires **one app launch** to register; uninstall removes it.
+- 🔌 Captioning depends on an external OpenAI-compatible service; you provide the key and pay that service.
+- 💻 Local single-machine app; no cloud or multi-device sync.
 
-## 数据与隐私
+#### ☁️ MinerU
 
-- **本地优先**：配置、历史与日志均保存在本机，无自建服务器、无遥测统计。
-- **文件去向**：解析请求发送至 `mineru.net`；图片描述发送至你自行配置的多模态服务。
-- **密钥安全**：Token 与 API Key 经 Windows DPAPI 加密后存于 `%APPDATA%\com.lighteru.app\lu-secrets.json`，不明文落盘。
-- **权限说明**：应用仅申请「打开路径」（`opener:allow-open-path`）用于打开你选择的输出目录与日志目录。该权限范围较宽（允许任意路径），因为输出目录可由用户指定到任意位置；它只调用系统默认程序打开路径，不读取、不上传文件内容。
-- **日志脱敏**：本地日志对密钥做掩码，可在设置中清空。
-- **卸载**：卸载程序删除右键菜单；本地数据是否保留取决于安装器选项。
+- 📊 Quotas, rate limits, and size/page limits follow the official docs and may change.
+- ⏳ Tokens expire after **90 days**.
+- 🧠 Parsing quality varies by document; 100% layout fidelity is not guaranteed.
+- 🪶 Agent mode is Markdown-only and single-file, with stricter limits.
 
-## 从源码构建
+<a id="privacy"></a>
+## 🔐 Data & Privacy
 
-**环境**
+- 🏠 **Local-first**: config, history, and logs stay on your machine; no self-hosted server, no telemetry.
+- 📤 **Where files go**: parse requests go to `mineru.net`; captions go to the multimodal endpoint you configure.
+- 🔑 **Secrets**: tokens and API keys are encrypted with Windows DPAPI and stored in `%APPDATA%\com.lighteru.app\lu-secrets.json`; never stored in plaintext.
+- 🛡️ **Permissions**: the app requests `opener:allow-open-path` only to open output/log folders you choose. The scope is broad (any path) because output folders can be anywhere; it only asks the OS to open a path and never reads or uploads file contents.
+- 🧾 **Log masking**: local logs mask secrets and can be cleared in Settings.
+- 🗑️ **Uninstall**: removes the context menu; whether local data is kept depends on the installer option.
 
-- Windows 10/11 + WebView2
-- Node.js 20+
-- Rust stable（`x86_64-pc-windows-gnu`）
-- MinGW-w64（需含 `as.exe`，并加入 `PATH`）
-- NSIS（`tauri build` 首次会自动下载）
+<a id="build"></a>
+## 🛠️ Build from Source
 
-**入口**
+**Requirements**
+
+- 🪟 Windows 10/11 + WebView2
+- 🟢 Node.js 20+
+- 🦀 Rust stable (`x86_64-pc-windows-gnu`)
+- ⚙️ MinGW-w64 (with `as.exe` on `PATH`)
+- 📦 NSIS (downloaded automatically on the first `tauri build`)
+
+**Commands**
 
 ```bash
 npm install
-npm run tauri dev      # 开发
-npm run tauri build    # 生产
+npm run tauri dev      # development
+npm run tauri build    # production
 ```
 
-**自检**
+**Checks**
 
 ```bash
 npm run typecheck
@@ -123,19 +159,27 @@ npm run selftest       # 75/75
 cd src-tauri && cargo check
 ```
 
-**产物**：`src-tauri/target/release/lighteru.exe` 与 `src-tauri/target/release/bundle/nsis/LighterU_<version>_x64-setup.exe`。
+**Artifacts**
 
-> 若安全软件误报 Tauri 构建脚本，请将 `src-tauri/target/` 加入信任区后重试。
+- `src-tauri/target/release/lighteru.exe`
+- `src-tauri/target/release/bundle/nsis/LighterU_<version>_x64-setup.exe`
 
-## 许可证与致谢
+> 💡 If antivirus flags Tauri's build script, trust `src-tauri/target/` and retry.
 
-**本项目**采用 [MIT License](LICENSE)。**维护者**：Techno
+<a id="license"></a>
+## 📄 License & Credits
 
-**关于 MinerU**：本项目是其**非官方**桌面客户端，**不包含** MinerU 源代码，仅通过 mineru.net 的公开 API 调用其服务。MinerU 开源项目自 **v3.1.0** 起采用 **MinerU Open Source License**（基于 Apache-2.0 并附额外条款；此前版本为 AGPLv3）；该许可证要求基于 MinerU 提供在线服务时，在显著位置标注使用了 MinerU——本 README 与 [NOTICE](NOTICE) 已作标注。API 的使用还需遵守 mineru.net 的服务条款、配额与计费规则。
+**License**: [MIT License](LICENSE). **Maintainer**: Techno
 
-**致谢**
+**About MinerU**: LighterU is an **unofficial** desktop client. It does **not include** MinerU's source code and only calls the public mineru.net API. Since **v3.1.0**, MinerU uses the **MinerU Open Source License** (Apache-2.0-based with additional terms; AGPLv3 before that). It requires prominent attribution when providing an online service based on MinerU — this README and [NOTICE](NOTICE) do so. API usage is subject to mineru.net's terms, quotas, and billing rules.
 
-- **MinerU / OpenDataLab**：解析能力与服务对象
-- **[Visual-skill](https://github.com/Asonlino/Visuals-Skill)**：产品与交互思路参考
-- **[tianshu](https://github.com/magicyuan876/mineru-tianshu)**：工程与链路思路参考
-- **Lucide Icons**（ISC）、**Tauri**（MIT / Apache-2.0）、**Vue / Vite** 及所有依赖作者
+**Credits**
+
+- 🙏 **[MinerU / OpenDataLab](https://mineru.net)**: parsing capability and service
+- 🎨 **[Visual-skill](https://github.com/Asonlino/Visuals-Skill)**: product and interaction inspiration
+- 🧠 **[tianshu](https://github.com/magicyuan876/mineru-tianshu)**: engineering and pipeline inspiration
+- 🧩 **Lucide Icons** (ISC), **Tauri** (MIT / Apache-2.0), **Vue / Vite**, and all dependency authors
+
+---
+
+<p align="center">Made with ❤️ by <a href="https://github.com/TechnoAtHere">Techno</a></p>
