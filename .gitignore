@@ -1,0 +1,38 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+dist-ssr/
+src-tauri/target/
+src-tauri/gen/
+
+# 日志
+logs/
+*.log
+
+# 本地环境
+.env
+.env.*
+*.local
+
+# 应用运行时数据 / 密钥（绝不提交）
+lu-config.json
+lu-secrets.json
+bmu-config.json
+bmu-secrets.json
+context-menu.disabled
+
+# 代理工作区数据（不属于源码）
+.workbuddy/
+
+# 编辑器与系统文件
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

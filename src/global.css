@@ -1,0 +1,85 @@
+/* 全局基线（轮 G·5）：消除浏览器默认 body margin（约 8px，是「右侧只滚一点点」全局滚动条的主因），
+ * 并锁定 html/body/#app 高度与溢出，使各窗口根容器以 100% 精确填满视口、内部区域自行滚动。 */
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  overflow: hidden;
+}
+
+#app {
+  overflow: hidden;
+}
+
+/* 颜色语言（轮 J）：与设计稿颜色语言一致。
+ * - primary  #0E8AFE：开始/自动等中性到积极信号、按钮、重点文字（克制使用）
+ * - success  #00E5B6：已完成等绝对积极信号（色块/圆点）
+ * - success-ink：同色系加深，用于白底文字，保证可读性（#00E5B6 白底对比不足）
+ * - success-bg：#00E5B6 与白色 90% 混合的浅色区域背景
+ * - danger   #F04F75：报警级；warning #F7903D：警告级
+ */
+:root {
+  --bmu-primary: #0e8afe;
+  --bmu-primary-weak: #eaf4ff;
+  --bmu-success: #00e5b6;
+  --bmu-success-ink: #009e80;
+  --bmu-success-bg: #e6fcf8;
+  --bmu-danger: #f04f75;
+  --bmu-danger-weak: #fef2f5;
+  --bmu-warning: #f7903d;
+  --bmu-warning-weak: #fff6ee;
+  --bmu-text: #111827;
+  --bmu-text-muted: #6b7280;
+  --bmu-border: #e5e7eb;
+  --bmu-surface: #ffffff;
+  --bmu-surface-alt: #fbfcfe;
+}
+
+body {
+  font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, -apple-system, sans-serif;
+  color: var(--bmu-text);
+  background: var(--bmu-surface);
+}
+
+/* 设置页所有复选框：绿色填充 + 白色对勾（自绘，确保对勾恒为白色） */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 4px;
+  background-color: #fff;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+  cursor: pointer;
+  display: inline-block;
+  vertical-align: middle;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+input[type="checkbox"]:checked {
+  border-color: var(--bmu-success, #00e5b6);
+  background-color: var(--bmu-success, #00e5b6);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.5l3 3 6-6' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+input[type="checkbox"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+@media (prefers-color-scheme: dark) {
+  input[type="checkbox"] {
+    border-color: #4b5563;
+    background-color: #1f1f1f;
+  }
+  input[type="checkbox"]:checked {
+    border-color: var(--bmu-success, #00e5b6);
+    background-color: var(--bmu-success, #00e5b6);
+  }
+}

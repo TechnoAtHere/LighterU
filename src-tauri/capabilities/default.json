@@ -1,0 +1,60 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for main / parse-dialog / progress windows (D.7: window show/setFocus)",
+  "windows": ["main", "parse-dialog", "progress-*"],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        { "path": "$APPCONFIG/**" },
+        { "path": "$HOME/**" },
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$PICTURE/**" },
+        { "path": "$VIDEO/**" },
+        { "path": "$AUDIO/**" },
+        { "path": "**" },
+        { "path": "**/*" }
+      ]
+    },
+    "fs:allow-applog-read-recursive",
+    "fs:allow-applog-write-recursive",
+    "fs:deny-default",
+    "sql:default",
+    "sql:allow-execute",
+    "store:default",
+    "dialog:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "https://*/*" },
+        { "url": "http://localhost/*" },
+        { "url": "http://127.0.0.1/*" }
+      ]
+    },
+    {
+      "identifier": "core:window:allow-show",
+      "allow": [{ "label": "main" }, { "label": "parse-dialog" }, { "label": "progress-*" }]
+    },
+    {
+      "identifier": "core:window:allow-set-focus",
+      "allow": [{ "label": "main" }, { "label": "parse-dialog" }, { "label": "progress-*" }]
+    },
+    {
+      "identifier": "core:window:allow-unminimize",
+      "allow": [{ "label": "main" }, { "label": "parse-dialog" }, { "label": "progress-*" }]
+    },
+    {
+      "identifier": "core:window:allow-hide",
+      "allow": [{ "label": "main" }, { "label": "parse-dialog" }, { "label": "progress-*" }]
+    },
+    {
+      "identifier": "core:window:allow-close",
+      "allow": [{ "label": "main" }, { "label": "parse-dialog" }, { "label": "progress-*" }]
+    }
+  ]
+}

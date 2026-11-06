@@ -1,0 +1,47 @@
+[package]
+name = "lighteru"
+version = "0.3.0"
+description = "LighterU — 更轻、更快的 MinerU Windows 桌面客户端"
+authors = ["Techno"]
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# 仅 rlib：desktop 应用由 bin（main.rs）链接本 lib；cdylib/staticlib 仅 mobile 需要，
+# 且 windows-gnu 的 GNU ld 对 debug 构建的巨型导出表会报 "export ordinal too large"（D-01：V0.3 仅 Windows 桌面）。
+name = "lighteru_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-sql = { version = "2", features = ["sqlite"] }
+tauri-plugin-store = "2"
+tauri-plugin-dialog = "2"
+# unsafe-headers：允许前端显式覆盖/移除 Origin 头。
+# 必要性：tauri-plugin-http 默认无条件追加 `Origin: tauri://localhost`（commands.rs:350-361），
+# 而 mineru.net 的 istio-envoy 网关对非同源 Origin 直接返回 403 "Invalid CORS request"，
+# 导致请求在鉴权前被拒（表现为「Token 正确仍 403」）。开启后传 `Origin: ""` 即可移除该头。
+tauri-plugin-http = { version = "2", features = ["unsafe-headers"] }
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+# DPAPI（Windows 数据保护 API）：密钥加密落盘的实现依赖（D-19/F-17）
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["dpapi", "wincrypt", "winbase"] }
+# 右键菜单注册表（HKCU 每用户，P-5）：仅 Windows
+winreg = "0.52"
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

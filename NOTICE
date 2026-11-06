@@ -1,0 +1,35 @@
+LighterU
+Copyright (c) 2026 Techno
+
+本仓库是 MinerU（mineru.net / OpenDataLab）的第三方非官方桌面客户端，
+与 MinerU / OpenDataLab 无任何隶属或背书关系，也不包含其源代码。
+使用本软件调用 MinerU API 时，需同时遵守其服务条款、配额与计费规则。
+
+关于 MinerU 许可
+----------------
+- MinerU 开源项目自 v3.1.0 起采用 MinerU Open Source License
+  （基于 Apache-2.0 并附额外条款；此前版本为 AGPLv3）。
+- 本项目不包含、不修改、不再分发 MinerU 源代码，仅通过 mineru.net 的公开 API
+  调用其解析服务，因此本项目代码采用 MIT，与 MinerU 的许可证相互独立。
+- MinerU 许可证要求：基于 MinerU 提供在线服务时，需在产品界面或公开文档的
+  显著位置标注使用了 MinerU。本 README 与 NOTICE 已作此标注。
+
+第三方组件与归属
+----------------
+- Lucide Icons (https://lucide.dev) — ISC License。
+  src/ui/components/Icon.vue 中的线性图标路径源自 Lucide。
+
+- MinerU-OCR-Tool — MIT License。
+  部分默认配置取值（解析选项默认值等）改编自该项目，具体见 src/core/config/defaults.ts 注释。
+
+- Tauri (https://tauri.app) — MIT / Apache-2.0。
+
+- Vue.js / Vite / TypeScript 及其余 npm、Rust crate 依赖 —
+  各自许可证见 package.json、package-lock.json、Cargo.toml、Cargo.lock。
+
+思路参考
+--------
+- Visual-skill (https://github.com/Asonlino/Visuals-Skill) — 产品与交互思路参考。
+- tianshu (https://github.com/magicyuan876/mineru-tianshu) — 工程与链路思路参考。
+
+"MINERU" 等名称与标识归其各自权利人所有，本仓库仅作描述性使用。
