@@ -27,7 +27,7 @@
 ## 📑 Table of Contents
 
 - [✨ Highlights](#highlights)
-- [🧭 Features](#features)
+- [🔧 Features](#features)
 - [📦 Install & Usage](#usage)
 - [🔐 Data & Privacy](#privacy)
 - [🛠️ Build from Source](#build)
@@ -38,65 +38,65 @@
 
 | Highlights | Details |
 |---|---|
-| ⚡ **Shortest path** | Right-click a file in Explorer; only a lightweight progress window appears. |
-| 🖥️ **Two entry points** | Single-file right-click and batch workbench, with independent settings. |
-| 🧩 **Multi-format** | Markdown · JSON · DOCX · HTML · images, selectable. |
-| 🖼️ **Images to text** | Works with any OpenAI-compatible multimodal endpoint to generate image descriptions. |
-| 🔒 **Local-first** | No self-hosted server, no telemetry; secrets encrypted with Windows DPAPI. |
+|  **Shortest path** | Right-click a file in Explorer; only a lightweight progress window appears |
+|  **Two entry points** | Single-file right-click and batch workbench, with independent settings |
+|  **Multi-format output** | Markdown · JSON · DOCX · HTML · images, freely selectable |
+|  **Images to text** | Works with any OpenAI-compatible multimodal service to generate image descriptions |
+|  **Local-first** | No self-hosted server, no telemetry; secrets encrypted with Windows DPAPI |
 
 <a id="features"></a>
-## 🧭 Features
+## 🔧 Features
 
-### 🖱️ Right-click parsing (shortest path)
+### Output format selection
 
-Right-click a file in Explorer → **Parse directly**. Only a lightweight progress window appears; results are written according to your settings. You can jump to the workbench from the window. If the app isn't running, the right-click action starts the background process and parses anyway.
+Output formats are multi-select: **Markdown / JSON / DOCX / HTML / images**, with custom combinations.
 
-### 🖥️ Workbench parsing (batch & manageable)
+### Right-click parsing (shortest path)
 
-Import files or a folder → **Start all**. Queue concurrency, retries, history, live logs, and notifications; each row can be re-run, change its output folder, or open the result folder.
+After the first launch of the app, right-click a supported file in Explorer → choose **Parse directly** from the context menu. Only a lightweight progress window appears; results are written according to your settings and the window then closes silently. Even if the app is not running, the right-click action starts the background process and completes the parse.
 
-- 📦 Output formats: **Markdown / JSON / DOCX / HTML / images**.
-- 🖼️ DOCX embeds images; when **Images** is unchecked, the standalone `images/` folder is deleted after captioning (except Markdown "both" mode).
+### Workbench parsing (batch & manageable)
 
-### 🖼️ Image captioning (turn images into text)
+Import files or an entire folder → click **Start all** or switch to **Auto-start mode**. Supports automatic queue concurrency, file splitting and reassembly, failure retries, and task history; each task can be re-run individually or have its output folder changed.
 
-After parsing, click the **“图” (Image)** button on a file to re-run captioning with the current prompt preset:
+### Image captioning (turn images into text)
 
-- 🔵 Turns **blue** on click (queued); if the file isn't parsed yet, it runs automatically when parsing completes.
-- 🟢 Turns **green** when done (stays blue on failure; click again to retry).
-- 🔑 Requires an OpenAI-compatible multimodal endpoint (Base URL / model / API key).
+After parsing, click the inline **"图" (Image)** button on a file, or enable **Caption images by default** in Settings, to generate descriptions with the current prompt preset:
+
+- Requires an OpenAI-compatible multimodal service to be configured first.
 
 <a id="usage"></a>
 ## 📦 Install & Usage
 
-### 1️⃣ Install
+### Install
 
-Download `LighterU_<version>_x64-setup.exe` from **Releases**.
+Download `LighterU_<version>_x64-setup.exe` from **Releases** and install it.
 
-> Windows 10/11 with WebView2 (usually preinstalled on Windows 11).
+> System requirements: Windows 10/11 with WebView2 (usually preinstalled on Windows 11).
 
-### 2️⃣ First-run setup
+### First-run setup
+
+After the first launch, configure as needed:
 
 1. **Parsing service** (choose one)
-   - **Precise API**: set your [mineru.net](https://mineru.net) Token in Settings → MinerU (valid for 90 days).
-   - **Agent API**: no token; IP rate-limited; single file ≤10MB / ≤20 pages; Markdown only.
-2. **Image captioning** (optional): set the OpenAI-compatible Base URL, model, and API key in Settings → Image Captioning.
-3. **Output preferences**: choose default formats, folder, and image retention in Settings → Output.
+   - **Precise parsing**: enter your [mineru.net](https://mineru.net) Token in Settings → MinerU (as required by MinerU, tokens are valid for 90 days);
+   - **Agent lightweight parsing**: no token required; larger single-file limits (≤10MB / ≤20 pages); Markdown output only.
+2. **Image captioning** (optional): set the Base URL, model name, and API key of an OpenAI-compatible service in Settings → Image Captioning.
+3. **Output preferences**: choose default formats, folder, and image retention policy in Settings → Output.
 
-### 3️⃣ FAQ
+### FAQ
 
-#### 🧩 App
+#### Usage issues
 
 | Symptom | Quick fix |
 |---|---|
-| Blank window when double-clicking the exe | Use the installer or `target/release/lighteru.exe` (release builds embed the frontend); during development use `npm run tauri dev`, not the bare exe under `target/debug` |
-| No “Parse directly” in the context menu | Launch the app once to register the menu; then check Settings → Output → Right-click entry → “Enable context menu” |
+| No "Parse directly" in the context menu | Launch the app once to register the menu; then check Settings → Output → Right-click entry → "Enable context menu" |
 | Image button stays blue | Check Settings → Image Captioning; make sure the file has finished parsing; check the log panel |
-| Can't find the output | Click “Open” on the task row; output defaults to the source folder or the configured folder |
-| Antivirus flags `build-script-build` | False positive for Tauri's unsigned build script; trust `src-tauri/target/` and retry |
+| Can't find the output files | Click "Open" on the task row to open the output folder; output defaults to the source folder or the configured folder |
 | Token save fails | DPAPI is Windows-only; run the app on Windows desktop |
+| I want to remove the context menu | Disable the context menu directly in Settings → Output |
 
-#### ☁️ MinerU
+#### MinerU service
 
 | Symptom | Quick fix |
 |---|---|
@@ -106,42 +106,50 @@ Download `LighterU_<version>_x64-setup.exe` from **Releases**.
 | File too large | Precise: ≤200MB, ≤200 pages; Agent: ≤10MB, ≤20 pages. Split or compress the file |
 | Garbled or missing content | Complex layouts, vertical text, and formulas are limited by the model; try another model version (e.g. `vlm`) |
 
-### 4️⃣ Known limitations
+- 📃 See the official MinerU documentation: https://mineru.net/apiManage/docs
 
-#### 🧩 App
+### Known limitations
 
-- 🪟 Windows 10/11 only; no macOS/Linux builds yet.
-- 🖱️ The context menu requires **one app launch** to register; uninstall removes it.
-- 🔌 Captioning depends on an external OpenAI-compatible service; you provide the key and pay that service.
-- 💻 Local single-machine app; no cloud or multi-device sync.
+#### App
 
-#### ☁️ MinerU
+-  Only supports **Windows 10/11**; no macOS / Linux builds yet.
+-  The context menu requires **one app launch** to register; uninstall removes it.
+-  Captioning depends on an external OpenAI-compatible service; you provide the key and pay that service.
+-  Local single-machine app; no cloud or multi-device sync.
 
-- 📊 Quotas, rate limits, and size/page limits follow the official docs and may change.
-- ⏳ Tokens expire after **90 days**.
-- 🧠 Parsing quality varies by document; 100% layout fidelity is not guaranteed.
-- 🪶 Agent mode is Markdown-only and single-file, with stricter limits.
+#### MinerU service
+
+-  Quotas, rate limits, and size/page limits follow the official docs and may change.
+-  Tokens expire after **90 days** and must be re-issued.
+-  Parsing quality varies by document; 100% layout fidelity is not guaranteed.
+-  Agent mode is Markdown-only and single-file, with stricter concurrency and other limits.
+
+
+### Other
+
+- The author is not a professional software engineer. Please excuse any shortcomings.
+- Issues are welcome. Apart from urgent matters, the author will review and address them periodically in batches.
 
 <a id="privacy"></a>
 ## 🔐 Data & Privacy
 
-- 🏠 **Local-first**: config, history, and logs stay on your machine; no self-hosted server, no telemetry.
-- 📤 **Where files go**: parse requests go to `mineru.net`; captions go to the multimodal endpoint you configure.
-- 🔑 **Secrets**: tokens and API keys are encrypted with Windows DPAPI and stored in `%APPDATA%\com.lighteru.app\lu-secrets.json`; never stored in plaintext.
-- 🛡️ **Permissions**: the app requests `opener:allow-open-path` only to open output/log folders you choose. The scope is broad (any path) because output folders can be anywhere; it only asks the OS to open a path and never reads or uploads file contents.
-- 🧾 **Log masking**: local logs mask secrets and can be cleared in Settings.
-- 🗑️ **Uninstall**: removes the context menu; whether local data is kept depends on the installer option.
+-  **Local-first**: config, history, and logs stay on your machine; no self-hosted server, no telemetry.
+-  **Where files go**: parse requests go to `mineru.net`; captions go to the multimodal service you configure.
+-  **Secrets**: tokens and API keys are encrypted with Windows DPAPI and stored in `%APPDATA%\com.lighteru.app\lu-secrets.json`; never stored in plaintext.
+-  **Permissions**: the app requests "open path" (`opener:allow-open-path`) only to open the output and log folders you choose, so you can jump to the corresponding folder in one click. It only asks the OS to open a path and never reads or uploads file contents.
+-  **Log masking**: local logs mask secrets and can be cleared in Settings.
+-  **Uninstall**: the uninstaller removes the context menu; whether local data is kept depends on the installer option.
 
 <a id="build"></a>
 ## 🛠️ Build from Source
 
 **Requirements**
 
-- 🪟 Windows 10/11 + WebView2
-- 🟢 Node.js 20+
-- 🦀 Rust stable (`x86_64-pc-windows-gnu`)
-- ⚙️ MinGW-w64 (with `as.exe` on `PATH`)
-- 📦 NSIS (downloaded automatically on the first `tauri build`)
+-  Windows 10/11 + WebView2
+-  Node.js 20+
+-  Rust stable (`x86_64-pc-windows-gnu`)
+-  MinGW-w64 (with `as.exe` on `PATH`)
+-  NSIS (downloaded automatically on the first `tauri build`)
 
 **Commands**
 
@@ -164,22 +172,29 @@ cd src-tauri && cargo check
 - `src-tauri/target/release/lighteru.exe`
 - `src-tauri/target/release/bundle/nsis/LighterU_<version>_x64-setup.exe`
 
-> 💡 If antivirus flags Tauri's build script, trust `src-tauri/target/` and retry.
 
 <a id="license"></a>
 ## 📄 License & Credits
 
-**License**: [MIT License](LICENSE). **Maintainer**: Techno
+**This project** uses the [MIT License](LICENSE). **Maintainer**: Techno
 
-**About MinerU**: LighterU is an **unofficial** desktop client. It does **not include** MinerU's source code and only calls the public mineru.net API. Since **v3.1.0**, MinerU uses the **MinerU Open Source License** (Apache-2.0-based with additional terms; AGPLv3 before that). It requires prominent attribution when providing an online service based on MinerU — this README and [NOTICE](NOTICE) do so. API usage is subject to mineru.net's terms, quotas, and billing rules.
+**About MinerU**: this project is an **unofficial** desktop client, **does not include** MinerU source code, and only calls the public mineru.net API.
+
+- Special note: since **v3.1.0**, the MinerU open-source project uses the **MinerU Open Source License** (based on Apache-2.0 with additional terms); it requires prominent attribution when providing an online service based on MinerU — this README and [NOTICE](NOTICE) both do so. **API usage is subject to mineru.net's terms of service, quotas, and billing rules (currently no charges apply).**
 
 **Credits**
 
 - 🙏 **[MinerU / OpenDataLab](https://mineru.net)**: parsing capability and service
-- 🎨 **[Visual-skill](https://github.com/Asonlino/Visuals-Skill)**: product and interaction inspiration
-- 🧠 **[tianshu](https://github.com/magicyuan876/mineru-tianshu)**: engineering and pipeline inspiration
-- 🧩 **Lucide Icons** (ISC), **Tauri** (MIT / Apache-2.0), **Vue / Vite**, and all dependency authors
+-  **[Visual-skill](https://github.com/Asonlino/Visuals-Skill)**: product and interaction inspiration
+-  **[tianshu](https://github.com/magicyuan876/mineru-tianshu)**: engineering and pipeline inspiration
+-  **Lucide Icons** (ISC), **Tauri** (MIT / Apache-2.0), **Vue / Vite**, and all dependency authors
 
 ---
 
-<p align="center">Made with ❤️ by <a href="https://github.com/TechnoAtHere">Techno</a></p>
+## 👤 Author
+
+- Techno
+- <a href="https://github.com/TechnoAtHere">GitHub Profile</a>
+- <a href="https://gitee.com/ATWWW">Gitee Profile</a>
+
+<p align="center">❤️ Made by <a href="https://github.com/TechnoAtHere">Techno ❤️ </a></p>
