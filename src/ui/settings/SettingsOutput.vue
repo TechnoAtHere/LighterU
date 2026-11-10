@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // T5-02/T5-05 设置页「输出」组。
 // 轮 I（#7）：由「点击切换页签」改为纵向流式排列——通用 / 右键入口 / 工作站入口 一次全部展示。
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import type { AppConfig, OutputEntryConfig, OutputKind, SameNameHandling } from "../../core/types";
 import { isTauri } from "../../core/platform/env";
 
@@ -13,6 +13,10 @@ const props = defineProps<{
 // 右键菜单手动开关：读取实际注册状态；切换时调用 Rust 命令并持久化（重启后仍尊重该选择）。
 const ctxMenuEnabled = ref(true);
 const ctxMenuBusy = ref(false);
+
+// Agent 轻量解析仅返回 Markdown、无图片目录：相关选项在此模式下不生效，
+// 禁用并给出说明，避免用户「勾选后静默无效」。切换回精准模式后配置保持不变。
+const isAgent = computed(() => props.cfg.mineru.apiMode === "agent");
 
 async function refreshContextMenuState(): Promise<void> {
   if (!isTauri()) return;
@@ -79,6 +83,7 @@ function isAllSelected(key: EntryKey): boolean {
 
 /** 「全部」选中时其余项不可单独取消 */
 function isKindDisabled(key: EntryKey, kind: OutputKind | "all"): boolean {
+  if (isAgent.value) return true;
   if (kind === "all") return false;
   return isAllSelected(key);
 }
@@ -109,6 +114,10 @@ function setSameName(value: string): void {
 <template>
   <div class="grp">
     <h3 class="grp-title">输出</h3>
+
+    <p v-if="isAgent" class="agent-warn">
+      当前为 Agent 轻量解析 API：仅输出 Markdown，单次上传 ≤10MB（超过 20 页的 PDF 会自动拆分）。JSON / DOCX / HTML / 图片 与图片描述在此模式下不生效；如需这些能力，请到「设置 → MinerU」切换为「精准解析 API」。
+    </p>
 
     <!-- 通用：失败重试上限 / 队列并发 / 同名输出目录 -->
     <section class="sect">
@@ -167,14 +176,14 @@ function setSameName(value: string): void {
       </div>
       <div class="row">
         <label>图片描述写入</label>
-        <select :value="cfg.output[s.key].captionMode" @change="setEntryField(s.key, 'captionMode', ($event.target as HTMLSelectElement).value)">
+        <select :value="cfg.output[s.key].captionMode" :disabled="isAgent" @change="setEntryField(s.key, 'captionMode', ($event.target as HTMLSelectElement).value)">
           <option value="replace">替换引用</option>
           <option value="both">两者都有</option>
         </select>
       </div>
       <div class="row">
         <label>图片描述默认启用</label>
-        <input type="checkbox" :checked="cfg.output[s.key].captionEnabled" @change="setEntryField(s.key, 'captionEnabled', ($event.target as HTMLInputElement).checked)" />
+        <input type="checkbox" :checked="cfg.output[s.key].captionEnabled" :disabled="isAgent" @change="setEntryField(s.key, 'captionEnabled', ($event.target as HTMLInputElement).checked)" />
       </div>
       <div class="row">
         <label>完成后自动打开</label>
@@ -201,11 +210,13 @@ function setSameName(value: string): void {
 .row .chk { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; color: inherit; cursor: pointer; }
 .row .chk input { margin: 0; }
 .hint { font-size: 12px; color: #999; margin: 6px 0 0; }
+.agent-warn { font-size: 12px; line-height: 1.6; margin: 0 0 12px; padding: 8px 10px; border: 1px solid #f0d9a8; border-radius: 8px; background: #fff8e8; color: #7a5a12; }
 @media (prefers-color-scheme: dark) {
   .sect { border-top-color: #333; }
   .sect-title { color: #8fb0f0; }
   .row label { color: #aaa; }
   .row input, .row select { background: #2c2c2c; border-color: #444; color: #f6f6f6; }
   .hint { color: #999; }
+  .agent-warn { border-color: #5c4a1f; background: #332a12; color: #e8cf8f; }
 }
 </style>

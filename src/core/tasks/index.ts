@@ -362,8 +362,11 @@ export class TaskManager {
   private async drain(concurrency?: number): Promise<void> {
     if (this.draining) return
     this.draining = true
-    const limit = Math.max(1, concurrency ?? this.config.tasks.queueConcurrency)
-    log('debug', 'tasks', 'drain.start', { queueLen: this.queue.length, concurrency: limit })
+    const requested = Math.max(1, concurrency ?? this.config.tasks.queueConcurrency)
+    // Agent 轻量解析按 IP 限频（长 PDF 还会拆成多片逐片提交）：文件间统一强制串行，避免叠加触发 429。
+    // 放在 drain 层可覆盖主窗口 / 解析对话框 / 进度窗全部入口，无需各调用点分别传参。
+    const limit = this.config.mineru.apiMode === 'agent' ? 1 : requested
+    log('debug', 'tasks', 'drain.start', { queueLen: this.queue.length, concurrency: limit, requested, agentMode: this.config.mineru.apiMode === 'agent' })
     try {
       const worker = async (): Promise<void> => {
         for (;;) {
@@ -556,6 +559,8 @@ export class TaskManager {
     const controller = new AbortController()
     this.controllers.set(jobId, controller)
     const startedAt = Date.now()
+    // 每次执行（含重试）都从干净的进度快照开始，避免沿用上一次的拆分进度
+    job.progress = undefined
     log('info', 'tasks', 'runJob.enter', { jobId, taskId, file: baseName(job.inputPath) })
 
     const storeOps: Promise<void>[] = []
@@ -583,7 +588,21 @@ export class TaskManager {
         persist({ errorStage: event.phase })
         emitTaskStatus({ taskId, fileId: jobId, state: job.status, stage: event.phase })
       } else if (event.type === 'progress') {
-        emitTaskProgress({ taskId, fileId: jobId, elapsedMs: Date.now() - startedAt })
+        // 汇总为 Job 的运行时进度快照：状态列据此显示分片进度与云端状态文案
+        job.progress = {
+          ...job.progress,
+          ...(event.cloudState !== undefined ? { cloudState: event.cloudState } : {}),
+          ...(event.partIndex !== undefined ? { partIndex: event.partIndex, partTotal: event.partTotal } : {}),
+          ...(event.extractedPages !== undefined ? { extractedPages: event.extractedPages, totalPages: event.totalPages } : {}),
+        }
+        job.updatedAt = Date.now()
+        emitTaskProgress({
+          taskId,
+          fileId: jobId,
+          elapsedMs: Date.now() - startedAt,
+          partIndex: event.partIndex,
+          partTotal: event.partTotal,
+        })
       } else if (event.type === 'log' && event.message) {
         emitLogLine({ taskId, level: 'info', message: event.message, timestamp: Date.now() })
       }
@@ -601,14 +620,22 @@ export class TaskManager {
         await this.runner(jobId, controller.signal)
         this.touchTask(taskId)
       } else {
-        const meta = this.meta.get(jobId) ?? {}
-        const transport = createHttpTransport(this.config.http.transport)
+        // 每次开启/重试都采用「执行当时」的配置，而非建任务时固化的 meta 快照。
+        // 配置由 applyConfig 保持最新（设置页保存、各入口开启/重试前均会同步）；
+        // 此处不重新 loadConfig，避免覆盖运行时注入的 Token/密钥与设置页尚未落盘的编辑。
+        const cfg = this.config
+        const entry = cfg.output.entry === 'context-menu' ? cfg.output.rightClick : cfg.output.workbench
+        const captionEnabled = resolveCaptionEnabled(entry.captionEnabled, undefined)
+        const outputs = entry.outputs
+        const format = entry.format
+        const captionMode = entry.captionMode
+        const transport = createHttpTransport(cfg.http.transport)
         const fs = createFsAdapter()
-        const destDirOverride = job.destDirOverride ?? (meta.destDir && meta.destDir.trim() ? meta.destDir : undefined)
+        const destDirOverride = job.destDirOverride ?? (entry.defaultDir.trim() ? entry.defaultDir : undefined)
         const result = await runParseJob(
           { filePath: job.inputPath },
           {
-            config: this.config,
+            config: cfg,
             transport,
             fs,
             onEvent,
@@ -616,12 +643,12 @@ export class TaskManager {
             store: this.store,
             taskId,
             destDirOverride,
-            outputFormat: meta.format,
-            sameNameHandling: meta.sameNameHandling,
+            outputFormat: format,
+            sameNameHandling: cfg.output.sameNameHandling,
             // D-97：把图片描述开关带进解析层，用于「必须保留图片」的落盘决策
-            captionEnabled: resolveCaptionEnabled(meta.captionEnabled ?? false),
+            captionEnabled,
             // D-98：输出内容多选，决定请求哪些额外格式与落盘哪些文件
-            outputs: meta.outputs,
+            outputs,
           },
         )
         job.outputDir = result.outputDir
@@ -633,26 +660,25 @@ export class TaskManager {
         persist({})
         emitTaskStatus({ taskId, fileId: jobId, state: 'done' })
         log('info', 'tasks', 'runJob.done', { jobId, taskId, durationMs: Date.now() - startedAt })
-        // T5-02/T5-05（轮 H 重构）：开启图片描述时，解析成功后按 captionMode 回写（旁路步骤；失败不影响解析终态）
-        // 开关解析：入口级默认（meta.captionEnabled 为建任务时固化的入口默认）；后续文件/任务级覆盖经 enabledDefault 透传
-        // Agent 轻量解析仅产出 Markdown（无 full.md/图片目录），跳过图片描述回写
+        // T5-02/T5-05：开启图片描述时，解析成功后按当时的 captionMode / 提示词方案回写
+        // （旁路步骤；失败不影响解析终态）。Agent 仅产出 Markdown，跳过回写。
         /** D-99：本次图片描述是否成功产出（null = 未运行），决定 DOCX 的 images/ 是否可清理 */
         let captionDescribed: number | null = null
-        if (this.config.mineru.apiMode !== 'agent' && resolveCaptionEnabled(meta.captionEnabled ?? false)) {
+        if (cfg.mineru.apiMode !== 'agent' && captionEnabled) {
           try {
             // D-97：启用图片描述时解析层已强制保留完整产物（含 images/）。
             // 若入口选择的是「仅 Markdown」，此处说明为何仍出现图片目录，避免用户误以为设置失效。
-            if (meta.format === 'markdown') {
+            if (format === 'markdown') {
               onEvent({ type: 'log', message: '图片描述已启用：本次保留 images/ 等中间产物以供读图；如需纯 Markdown，请关闭图片描述后重新解析。' })
             }
             const cap = await rerunCaption(
-              { config: this.config, transport, fs },
+              { config: cfg, transport, fs },
               {
                 outputDir: result.outputDir,
-                mode: meta.captionMode ?? 'replace',
-                enabledDefault: meta.captionEnabled,
+                mode: captionMode,
+                enabledDefault: entry.captionEnabled,
                 // 轮 J：使用设置中当前选中的提示词方案（内置 4 套 / 用户自定义）
-                customUserPrompt: resolveActivePromptContent(this.config.multimodal),
+                customUserPrompt: resolveActivePromptContent(cfg.multimodal),
                 signal: controller.signal,
                 onLog: (m) => onEvent({ type: 'log', message: m }),
               },
@@ -671,10 +697,9 @@ export class TaskManager {
          * 仅在「确有描述成功」时清理——全部失败时保留图片，便于用户重试。
          */
         {
-          // 历史任务（loadTask）未持久化 outputs：保守保留图片，避免误删用户可能需要的 images/
-          const outputs = meta.outputs ?? null
-          const keepImages = outputs === null || outputs.includes('images')
-          const keepForMarkdown = (outputs?.includes('markdown') ?? false) && (meta.captionMode ?? 'replace') === 'both'
+          // 按本次执行时生效的输出多选与写入方式决定，不再依赖建任务时的快照
+          const keepImages = outputs.includes('images')
+          const keepForMarkdown = outputs.includes('markdown') && captionMode === 'both'
           const describedOk = captionDescribed !== null && captionDescribed > 0
           if (!keepImages && !keepForMarkdown && describedOk && fs.removeDir) {
             const imagesDir = `${result.outputDir.replace(/[\\/]+$/, '')}/images`

@@ -13,7 +13,7 @@ import { TaskManager } from '../core/tasks'
 import { loadConfig, normalizeConfig } from '../core/config'
 import { createConfigStore } from '../core/platform/store'
 import { createSecretsAdapter } from '../core/platform/secrets'
-import { safeExtractZip, scanOutputs, firstMarkdown, pickFinalContentJson, sanitizeStem, sanitizeRelativePath } from '../core/output'
+import { safeExtractZip, scanOutputs, firstMarkdown, pickFinalContentJson, sanitizeStem, sanitizeRelativePath, writeOutputs } from '../core/output'
 import { createFsAdapter } from '../core/platform/fs'
 import type { FsAdapter } from '../core/platform/fs'
 import { toLongPath } from '../core/platform/longpath'
@@ -51,7 +51,7 @@ import type { Store, TaskRow } from '../core/store'
 import { isBatchComplete, type SubmitMeta, type TaskRunner } from '../core/tasks'
 import { viewState } from '../core/tasks/states'
 import { isResumeCompatible, hashOptions } from '../core/tasks/resume'
-import { parseTaskStatus } from '../core/client/compat'
+import { parseTaskStatus, normalizeState } from '../core/client/compat'
 import type { AppConfig, Job } from '../core/types'
 
 interface CheckResult {
@@ -1910,6 +1910,220 @@ async function main(): Promise<void> {
       box.v === 'tX',
       `history=${box.v}, cliWire=${cli === '' ? 'ok(no-emit)' : cli}`,
     );
+  }
+
+  // ---------------------------------------------------------------- U-72 Agent 落盘：同名不覆盖
+  {
+    const outDir = path.join(tmpRoot, 'agent_samename')
+    await fs.mkdir(outDir, { recursive: true })
+    const adapter = createFsAdapter()
+    await fs.writeFile(path.join(outDir, 'a.md'), 'OLD')
+    const r1 = await writeOutputs(adapter, [{ path: 'full.md', data: new TextEncoder().encode('NEW1') }], outDir, 'a', { format: 'markdown', sameName: 'suffix' })
+    const r2 = await writeOutputs(adapter, [{ path: 'full.md', data: new TextEncoder().encode('NEW2') }], outDir, 'a', { format: 'markdown', sameName: 'suffix' })
+    const old = await fs.readFile(path.join(outDir, 'a.md'), 'utf-8')
+    const v1 = r1.markdownPath ? await fs.readFile(r1.markdownPath, 'utf-8') : ''
+    const v2 = r2.markdownPath ? await fs.readFile(r2.markdownPath, 'utf-8') : ''
+    check(
+      'U-72',
+      'Agent 落盘复用 writeOutputs：suffix 下同名 .md 不被覆盖，两次结果各自保留',
+      old === 'OLD' && v1 === 'NEW1' && v2 === 'NEW2' && !!r1.markdownPath && !!r2.markdownPath && r1.markdownPath !== r2.markdownPath,
+      `old=${old}, p1=${r1.markdownPath}, p2=${r2.markdownPath}`,
+    )
+  }
+
+  // ---------------------------------------------------------------- U-73 D-98：输出多选推导进入请求体
+  {
+    const outDir = path.join(tmpRoot, 'extra_formats')
+    await fs.mkdir(outDir, { recursive: true })
+    const inputPath = path.join(outDir, 'a.pdf')
+    await fs.writeFile(inputPath, await makePdf(3))
+    const mock = await startMockServer()
+    const cfg = await buildConfig({ baseUrl: mock.baseUrl, outputDir: outDir })
+    let err = ''
+    // mock server 偶发端口竞争（fetch failed）：仅在请求未到达时短延迟重试，避免自检时好时坏。
+    for (let attempt = 0; attempt < 3 && mock.fileUrlBodies.length === 0; attempt += 1) {
+      try {
+        await runParseJob(
+          { filePath: inputPath },
+          {
+            config: cfg,
+            transport: createHttpTransport('fetch'),
+            fs: createFsAdapter(),
+            onEvent: () => undefined,
+            signal: new AbortController().signal,
+            outputs: ['markdown', 'json', 'docx', 'html'],
+          },
+        )
+      } catch (e) {
+        err = e instanceof Error ? e.message : String(e)
+      }
+      if (mock.fileUrlBodies.length === 0) await new Promise((r) => setTimeout(r, 150))
+    }
+    const body = mock.fileUrlBodies[0] ?? {}
+    const extra = Array.isArray(body.extra_formats) ? (body.extra_formats as unknown[]).map(String) : []
+    check(
+      'U-73',
+      'D-98：输出多选的 DOCX / HTML 进入 file-urls 请求体（effectiveParseOptions 不再被绕过）',
+      extra.includes('docx') && extra.includes('html'),
+      `extra_formats=${JSON.stringify(extra)}, pipelineErr=${err || 'none'}`,
+    )
+    await mock.close()
+  }
+
+  // ---------------------------------------------------------------- U-74 Agent 自动拆分：>20 页分批上传 + 合并
+  {
+    const outDir = path.join(tmpRoot, 'agent_split_e2e')
+    await fs.mkdir(outDir, { recursive: true })
+    const inputPath = path.join(outDir, 'big.pdf')
+    await fs.writeFile(inputPath, await makePdf(45)) // 20 + 20 + 5 = 3 片
+    const mock = await startMockServer()
+    const cfg = await buildConfig({ baseUrl: mock.baseUrl, outputDir: outDir })
+    cfg.mineru.apiMode = 'agent'
+    cfg.mineru.agentBaseUrl = mock.agentBaseUrl
+    let err = ''
+    let result: Awaited<ReturnType<typeof runParseJob>> | null = null
+    const logs: string[] = []
+    const progresses: Array<{ partIndex?: number; partTotal?: number }> = []
+    try {
+      result = await runParseJob(
+        { filePath: inputPath },
+        {
+          config: cfg,
+          transport: createHttpTransport('fetch'),
+          fs: createFsAdapter(),
+          onEvent: (e) => {
+            if (e.type === 'log' && e.message) logs.push(e.message)
+            if (e.type === 'progress') progresses.push({ partIndex: e.partIndex, partTotal: e.partTotal })
+          },
+          signal: new AbortController().signal,
+        },
+      )
+    } catch (e) {
+      err = e instanceof Error ? e.message : String(e)
+    }
+    const md = result?.markdownPath ? await fs.readFile(result.markdownPath, 'utf-8').catch(() => '') : ''
+    const names = mock.agentSubmits.map((s) => s.name)
+    check(
+      'U-74',
+      'Agent 自动拆分：45 页 → 3 片逐片提交/上传/下载 → 合并为一份 Markdown + 分片进度事件',
+      names.length === 3
+        && names.join(',') === 'split_part_1.pdf,split_part_2.pdf,split_part_3.pdf'
+        && mock.agentSubmits.every((s) => s.pageRange === null)
+        && md.includes('split_part_1.pdf') && md.includes('split_part_2.pdf') && md.includes('split_part_3.pdf')
+        && logs.some((l) => l.includes('拆分为 3 个分片'))
+        && [1, 2, 3].every((i) => progresses.some((p) => p.partIndex === i && p.partTotal === 3)),
+      `submits=${names.join(',') || 'none'}, mdLen=${md.length}, splitLog=${logs.some((l) => l.includes('拆分为 3 个分片'))}, progress=${JSON.stringify(progresses.filter((p) => p.partTotal))}, err=${err || 'none'}`,
+    )
+    await mock.close()
+  }
+
+  // ---------------------------------------------------------------- U-75 Agent 未超限不拆分（单文件行为不回归）
+  {
+    const outDir = path.join(tmpRoot, 'agent_single')
+    await fs.mkdir(outDir, { recursive: true })
+    const inputPath = path.join(outDir, 'a.pdf')
+    await fs.writeFile(inputPath, await makePdf(3))
+    const mock = await startMockServer()
+    const cfg = await buildConfig({ baseUrl: mock.baseUrl, outputDir: outDir })
+    cfg.mineru.apiMode = 'agent'
+    cfg.mineru.agentBaseUrl = mock.agentBaseUrl
+    let err = ''
+    let result: Awaited<ReturnType<typeof runParseJob>> | null = null
+    try {
+      result = await runParseJob(
+        { filePath: inputPath },
+        {
+          config: cfg,
+          transport: createHttpTransport('fetch'),
+          fs: createFsAdapter(),
+          onEvent: () => undefined,
+          signal: new AbortController().signal,
+        },
+      )
+    } catch (e) {
+      err = e instanceof Error ? e.message : String(e)
+    }
+    check(
+      'U-75',
+      'Agent ≤20 页不拆分：单次提交、保持原有单文件落盘行为',
+      mock.agentSubmits.length === 1
+        && mock.agentSubmits[0]?.name === 'a.pdf'
+        && !!result?.markdownPath
+        && (await exists(result.markdownPath)),
+      `submits=${mock.agentSubmits.map((s) => s.name).join(',') || 'none'}, md=${result?.markdownPath ?? 'null'}, err=${err || 'none'}`,
+    )
+    await mock.close()
+  }
+
+  // ---------------------------------------------------------------- U-76 图片描述取消：不写回、不留半截改动
+  {
+    const outDir = path.join(tmpRoot, 'rerun-cancel')
+    await fs.mkdir(path.join(outDir, 'images'), { recursive: true })
+    const png = Buffer.from(ONE_PX_PNG_B64, 'base64')
+    const originalMd = '# 文档\n\n![图1](images/a.png)\n'
+    await fs.writeFile(path.join(outDir, 'full.md'), originalMd)
+    await fs.writeFile(path.join(outDir, 'images', 'a.png'), png)
+    await fs.writeFile(path.join(outDir, '_content_list.json'), '[]')
+    const mock = await startMockServer()
+    const cfg = await mmConfig(mock, outDir)
+    const controller = new AbortController()
+    controller.abort()
+    const r = await rerunCaption(
+      { config: cfg, transport: createHttpTransport('fetch'), fs: createFsAdapter() },
+      { outputDir: outDir, enabledDefault: true, signal: controller.signal },
+    )
+    const mdAfter = await fs.readFile(path.join(outDir, 'full.md'), 'utf-8')
+    check(
+      'U-76',
+      '图片描述取消：中止信号不写回 Markdown、不生成 .bak、返回 skipped=已取消',
+      r.written.length === 0 && mdAfter === originalMd
+        && !(await exists(path.join(outDir, 'full.md.bak')))
+        && r.skipped === '已取消'
+        && mock.multimodalAttempts === 0,
+      `written=${r.written.length}, mdUnchanged=${mdAfter === originalMd}, skipped=${r.skipped}, llmCalls=${mock.multimodalAttempts}`,
+    )
+    await mock.close()
+  }
+
+  // ---------------------------------------------------------------- U-77 官方 v4 任务状态归一
+  {
+    const cases: Array<[string, string]> = [
+      ['pending', 'pending'], ['queued', 'pending'], ['waiting-file', 'pending'],
+      ['running', 'running'], ['uploading', 'running'],
+      ['converting', 'converting'],
+      ['done', 'done'], ['succeeded', 'done'],
+      ['failed', 'failed'], ['failure', 'failed'],
+      ['unexpected-state', 'unknown'],
+    ]
+    const bad = cases.filter(([raw, want]) => normalizeState(raw) !== want)
+    check(
+      'U-77',
+      '官方 v4 state 归一：pending / running / converting / done / failed 明确区分，别名与未知态有兜底',
+      bad.length === 0,
+      `cases=${cases.length}, bad=${JSON.stringify(bad)}`,
+    )
+  }
+
+  // ---------------------------------------------------------------- U-78 官方 v4 嵌套 extract_progress 解析
+  {
+    const nested = parseTaskStatus('t1', 'b1', {
+      code: 0, msg: 'ok', trace_id: 'c876cd60',
+      task_id: 'abc', data_id: 'did', state: 'running',
+      extract_progress: { extracted_pages: 1, total_pages: 2, start_time: '2025-01-20 11:43:20' },
+    })
+    const flat = parseTaskStatus('t2', 'b2', { state: 'running', extracted_pages: 3, total_pages: 9 })
+    const failedState = parseTaskStatus('t3', 'b3', {
+      state: 'failed', err_msg: '文件格式不支持', full_zip_url: '',
+    })
+    check(
+      'U-78',
+      '官方 v4 响应解析：嵌套 extract_progress 取到页数、兼容顶层扁平字段、failed 保留 err_msg',
+      nested.extractedPages === 1 && nested.totalPages === 2 && nested.taskId === 'abc'
+        && flat.extractedPages === 3 && flat.totalPages === 9
+        && failedState.state === 'failed' && failedState.message === '文件格式不支持'
+        && failedState.resultUrl === null,
+      `nested=${nested.extractedPages}/${nested.totalPages}, flat=${flat.extractedPages}/${flat.totalPages}, failed=${failedState.state}/${failedState.message}`,
+    )
   }
 
   // ---------------------------------------------------------------- 汇总

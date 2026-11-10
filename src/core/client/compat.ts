@@ -40,7 +40,8 @@ const STATE_ALIASES: Record<string, CloudState> = {
   running: 'running',
   pending: 'pending',
   queued: 'pending',
-  converting: 'running',
+  // 官方 v4：converting = 格式转换中，是与 running 并列的独立状态，不再折叠
+  converting: 'converting',
   uploading: 'running',
   'waiting-file': 'pending',
   done: 'done',
@@ -72,8 +73,14 @@ export function parseTaskStatus(taskId: string, batchId: string, payload: Record
   const message = findFirst(payload, fields.message)
   const resultUrl = findFirst(payload, fields.resultUrl)
   const markdownUrl = findFirst(payload, fields.markdownUrl)
-  const extractedPages = findFirst(payload, fields.progressDone)
-  const totalPages = findFirst(payload, fields.progressTotal)
+  // 官方 v4：extract_progress 是嵌套对象 { extracted_pages, total_pages, start_time }；
+  // 同时兼容旧版 / mock 的顶层扁平字段（extracted_pages / total_pages 直接挂在结果项上）。
+  const rawProgress = findFirst(payload, fields.progress)
+  const progress = typeof rawProgress === 'object' && rawProgress !== null
+    ? rawProgress as Record<string, unknown>
+    : {}
+  const extractedPages = findFirst(progress, fields.progressDone) ?? findFirst(payload, fields.progressDone)
+  const totalPages = findFirst(progress, fields.progressTotal) ?? findFirst(payload, fields.progressTotal)
   const resolvedTaskId = findFirst(payload, fields.taskId)
 
   return {

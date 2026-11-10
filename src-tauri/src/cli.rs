@@ -1,17 +1,22 @@
 //! 命令行参数解析 + 跨窗口命令（T4-07 单实例 / 右键菜单传参）。
 //!
 //! 右键菜单命令与 CLI 均以参数形式传入：
-//!   --parse "<path>" ["<path>" ...]  直接解析（进度窗，输出到源目录；D.8 支持多选多文件）
+//!   --parse "<path>" ["<path>" ...]  直接解析（进度窗，输出到源目录；支持多路径）
 //!   --open-workbench                 打开主工作站
 //!   --open-settings                  打开设置页（T5-07 实现，前期占位）
 //!   无参数                           默认打开主工作站
 //!
-//! 传递路径：
-//!   - 首次启动：setup 解析 argv 存入 LaunchState，前端 onMounted 经 `lu_get_launch_action` 拉取（避免事件早于监听注册的竞态）。
-//!   - 第二实例：single-instance 回调经 `lu:cli-command` 事件推送（前端已运行，直接监听）。
-//! 两路在前端汇聚到同一 handler。
+//! 多选传参（方案 A，替代早期 D.8 设想）：
+//!   - 注册表命令为 `--parse "%1"`（D.13），Windows 对多选文件会**逐文件启动进程**，每个 argv 只有一个路径；
+//!     早期设想的 `MultiSelectModel=Player` + `%*` 实测在本机展开为空，已回退，勿再按「一次传参」理解。
+//!   - 冷启动首进程的 argv 与后续 single-instance 转发的文件路径，统一并入 `parse_batch::PendingParse`；
+//!     由后台 flusher 去重、静默窗口后一次性 emit 整批 `parse` 命令。
+//!   - 首次启动：`setup` 只把「空 parse 占位」存入 LaunchState（既不显示 main，也不提前开单文件进度窗）；
+//!     非 parse 动作仍走 LaunchState。
+//!   - 第二实例：single-instance 回调对 `DirectParse` 只 append 不 emit，其余动作立即 emit。
+//!   - 前端在 `onCliCommand` 订阅建立后调用 `lu_mark_cli_ready` 标记就绪，flusher 此后才下发批次，
+//!     避免事件早于订阅而丢失；前端迟迟未就绪时有 10s 兜底。
 //!
-//! D.8 变更：`--parse` 支持一次传入多个文件路径（右键多选 + MultiSelectModel=Player + `%*`）；
 //! `--parse-to` / `ParseTo` 已随小窗退役移除。
 
 use serde::Serialize;
@@ -23,14 +28,14 @@ use crate::lu_log;
 pub struct CliCommand {
     /// "parse" | "open-workbench" | "open-settings"
     pub action: String,
-    /// parse 支持多文件（右键多选一次传参）；其余动作为 None
+    /// parse：Rust 侧聚合后的整批文件路径；其余动作为 None
     pub file_paths: Option<Vec<String>>,
 }
 
 /// 解析后的启动意图
 #[derive(Clone, Debug, PartialEq)]
 pub enum LaunchAction {
-    /// 直接解析（D.8：支持多文件，右键多选一次性传入）
+    /// 直接解析（方案 A：支持多文件，由 Rust 侧聚合整批后一次性下发）
     DirectParse(Vec<String>),
     OpenWorkbench,
     OpenSettings,
@@ -53,7 +58,7 @@ pub fn parse_launch_args(args: &[String]) -> LaunchAction {
     while i < args.len() {
         match args[i].as_str() {
             "--parse" => {
-                // 收集后续所有非 flag 参数为文件路径（右键多选 Player 模式一次传多个）
+                // 收集后续所有非 flag 参数为文件路径（注册表 "%1" 每次只传一个，聚合在 Rust 侧完成）
                 let mut files: Vec<String> = Vec::new();
                 let mut j = i + 1;
                 while j < args.len() && !args[j].starts_with("--") {
@@ -85,7 +90,9 @@ pub const CLI_EVENT: &str = "lu:cli-command";
 #[derive(Default)]
 pub struct LaunchState(pub Mutex<Option<CliCommand>>);
 
-/// 前端 onMounted 拉取首次启动意图（竞态安全：不等事件）
+/// 前端 onMounted 拉取首次启动意图（竞态安全：不等事件）。
+/// 注意：此处**不**标记 frontend_ready——事件订阅在 onMounted 更后面才注册，
+/// 过早放行会让 flusher 在订阅建立前 emit。ready 由 `lu_mark_cli_ready` 在订阅后设置。
 #[tauri::command]
 pub fn lu_get_launch_action(state: tauri::State<'_, LaunchState>) -> Option<CliCommand> {
     let c = state.0.lock().ok().and_then(|g| g.clone());
@@ -117,7 +124,7 @@ mod tests {
 
     #[test]
     fn parse_direct_parse_multi() {
-        // D.8：右键多选一次传多个文件
+        // 方案 A：聚合后的整批可一次传多个路径（保留该能力供 CLI / 测试使用）
         let a = parse_launch_args(&args(&["app", "--parse", "D:\\a.pdf", "D:\\b.pdf", "D:\\c.pdf"]));
         assert_eq!(
             a,

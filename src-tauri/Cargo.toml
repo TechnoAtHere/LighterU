@@ -1,6 +1,6 @@
 [package]
 name = "lighteru"
-version = "0.3.0"
+version = "0.3.1"
 description = "LighterU — 更轻、更快的 MinerU Windows 桌面客户端"
 authors = ["Techno"]
 edition = "2024"

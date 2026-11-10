@@ -41,7 +41,13 @@ function openTokenSite(): void {
   void openExternal("https://mineru.net/apiManage/token");
 }
 
+/** MinerU 官方文档站（安装 / 输出格式 / SDK / CLI 等完整说明） */
 function openDocs(): void {
+  void openExternal("https://opendatalab.github.io/MinerU/");
+}
+
+/** 开放平台 API 文档（接口字段、状态说明、错误码） */
+function openApiDocs(): void {
   void openExternal("https://mineru.net/apiManage/docs");
 }
 
@@ -105,7 +111,7 @@ function setParse(patch: (p: AppConfig["mineru"]["parse"]) => void): void {
         <input type="checkbox" :checked="cfg.mineru.apiMode === 'agent'" tabindex="-1" @click.prevent.stop />
         <span class="mc-text">
           <span class="mc-title">Agent 轻量解析 API</span>
-          <span class="mc-sub">免 Token · ≤10MB / ≤20 页 · 单文件</span>
+          <span class="mc-sub">免 Token · 单次 ≤10MB · 长 PDF 自动拆分</span>
         </span>
       </label>
     </div>
@@ -145,7 +151,10 @@ function setParse(patch: (p: AppConfig["mineru"]["parse"]) => void): void {
 
       <div class="sub-row">
         <div class="sub">解析选项</div>
-        <button class="link-btn" type="button" @click="openDocs">打开官方文档</button>
+        <span class="doc-links">
+          <button class="link-btn" type="button" @click="openDocs">打开官方文档</button>
+          <button class="link-btn" type="button" @click="openApiDocs">API 文档</button>
+        </span>
       </div>
       <div class="row">
         <label>强制启用图片识别</label>
@@ -185,17 +194,23 @@ function setParse(patch: (p: AppConfig["mineru"]["parse"]) => void): void {
           <tr><th>是否需要 Token</th><td>❌ 无需（IP 限频）</td></tr>
           <tr><th>接口地址</th><td>/api/v1/agent/parse/url 或 /api/v1/agent/parse/file</td></tr>
           <tr><th>模型版本</th><td>固定 pipeline 轻量模型</td></tr>
-          <tr><th>文件大小限制</th><td>≤ 10MB</td></tr>
-          <tr><th>页数限制</th><td>≤ 20 页</td></tr>
-          <tr><th>批量支持</th><td>❌ 单文件</td></tr>
+          <tr><th>文件大小限制</th><td>≤ 10MB / 每次上传</td></tr>
+          <tr><th>页数限制</th><td>每片 ≤ 20 页；超过时自动拆分、逐片解析并合并</td></tr>
+          <tr><th>批量支持</th><td>❌ 多文件批量（长 PDF 自动分片）</td></tr>
           <tr><th>输出格式</th><td>仅 Markdown（CDN 链接）</td></tr>
           <tr><th>调用方式</th><td>异步（提交 → 轮询）</td></tr>
         </tbody>
       </table>
 
-      <p class="agent-note">无需 Token，按 IP 限频；超出限制返回 HTTP 429。仅输出 Markdown。</p>
+      <p class="agent-note">无需 Token，按 IP 限频；超出限制返回 HTTP 429。仅输出 Markdown。超过 20 页的 PDF 会自动按 20 页一片拆分、逐片上传并合并为一份结果；分片较多时可能触发限频，客户端会自动退避重试。</p>
 
-      <div class="sub">解析选项</div>
+      <div class="sub-row">
+        <div class="sub">解析选项</div>
+        <span class="doc-links">
+          <button class="link-btn" type="button" @click="openDocs">打开官方文档</button>
+          <button class="link-btn" type="button" @click="openApiDocs">API 文档</button>
+        </span>
+      </div>
       <div class="row">
         <label>识别语言</label>
         <select :value="cfg.mineru.parse.language" @change="setParse((p) => { p.language = ($event.target as HTMLSelectElement).value; })">
@@ -246,6 +261,7 @@ function setParse(patch: (p: AppConfig["mineru"]["parse"]) => void): void {
 .row input:not([type="checkbox"]), .row select { flex: 1; min-width: 0; padding: 0.4em 0.6em; font-size: 13px; border: 1px solid #d4d4d4; border-radius: 8px; background: #fff; color: #0f0f0f; }
 .row button { border-radius: 8px; border: 1px solid var(--lu-primary, #0e8afe); background: var(--lu-primary, #0e8afe); color: #fff; padding: 0.4em 0.9em; font-size: 13px; cursor: pointer; }
 .link-btn { border: none; background: none; color: var(--lu-primary, #0e8afe); font-size: 13px; cursor: pointer; padding: 0.4em 0.5em; text-decoration: underline; }
+.doc-links { display: inline-flex; align-items: center; gap: 8px; }
 .checks { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
 .chk { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: #374151; }
 @media (prefers-color-scheme: dark) {

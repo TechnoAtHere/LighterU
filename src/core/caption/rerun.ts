@@ -60,6 +60,18 @@ export async function rerunCaption(deps: RerunCaptionDeps, opts: RerunCaptionOpt
   const { config } = deps
   const mode = opts.mode ?? 'replace'
 
+  // 入口即已取消：直接返回，不读文件、不扫图、不发请求（按钮点击取消的常见情形）
+  if (opts.signal?.aborted) {
+    onLog('图片描述已取消。')
+    return {
+      captions: new Map(),
+      failures: [],
+      stats: { images: 0, described: 0, duplicates: 0, failed: 0, capped: 0 },
+      written: [],
+      skipped: '已取消',
+    }
+  }
+
   // 开关门控（轮 H：调用级 > 入口级默认；enabledDefault 对应设置页「图片描述默认启用」）
   const enabled = resolveCaptionEnabled(opts.enabledDefault ?? false, opts.enabledOverride)
   if (!enabled) {
@@ -111,6 +123,13 @@ export async function rerunCaption(deps: RerunCaptionDeps, opts: RerunCaptionOpt
       : '没有可获得描述的图片（调用均失败或已达上限），未写回'
     onLog(reason)
     return { ...run, written, skipped: noImages ? reason : null }
+  }
+
+  // 取消后即使已拿到部分描述也不写回，避免「已取消」却留下半截改动。
+  // 现有调用方不传 signal 时此分支永不触发，不影响正常重跑。
+  if (opts.signal?.aborted) {
+    onLog('图片描述已取消，未写回 Markdown。')
+    return { ...run, written, skipped: '已取消' }
   }
 
   const updated = writebackMarkdown(markdown, run.captions, mode)

@@ -12,7 +12,7 @@
   <img alt="platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?style=flat-square" />
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square" />
   <img alt="Vue" src="https://img.shields.io/badge/Vue-3-42B883?style=flat-square" />
-  <img alt="version" src="https://img.shields.io/badge/version-0.3.0-blue?style=flat-square" />
+  <img alt="version" src="https://img.shields.io/badge/version-0.3.1-blue?style=flat-square" />
   <img alt="license" src="https://img.shields.io/badge/license-MIT-3DA639?style=flat-square" />
 </p>
 
@@ -80,7 +80,7 @@
 
 1. **解析服务**（二选一）
    - **精准解析**：在「设置 → MinerU」填入 [mineru.net](https://mineru.net) 的 Token（根据MinerU要求，Token有效期为 90 天）；
-   - **Agent 轻量解析**：无需 Token，单文件限制较大（ ≤10MB / ≤20 页），仅输出 Markdown。
+   - **Agent 轻量解析**：无需 Token，单次上传 ≤10MB；超过 20 页的 PDF 会自动按 20 页一片拆分、逐片解析并合并为一份 Markdown。
 2. **图片描述**（可选）：在「设置 → 图片描述」填入 OpenAI 兼容服务的 Base URL、模型名与 API Key。
 3. **输出偏好**：在「设置 → 输出」选择默认格式、目录与图片保留策略。
 
@@ -103,7 +103,7 @@
 | Token 无效 / 过期（A0202） | 到 mineru.net 重新申请 Token 并保存；Token 有效期 90 天 |
 | 403 Forbidden | 检查 Token 是否已保存、是否混入空格/换行；检查 API 地址 |
 | 429 / 排队 / 限流 | 稍后重试；Agent 模式按 IP 限频，精准模式有每日/每分钟配额 |
-| 文件超限 | 精准：≤200MB、≤200 页；Agent：≤10MB、≤20 页。超限请拆分或压缩 |
+| 文件超限 | 精准：≤200MB、≤200 页；Agent：单次上传 ≤10MB（长 PDF 自动按 20 页拆分）。仍超限请压缩文件或切换精准解析 |
 | 解析结果乱序或缺内容 | 复杂版面/竖排/公式受模型能力限制；可切换模型版本（如 `vlm`）重试 |
 
 - 📃 具体请见MinerU官方文档：https://mineru.net/apiManage/docs
@@ -122,7 +122,7 @@
 -  配额、频率、文件大小/页数限制以官方说明为准，可能调整。
 -  Token 有效期 **90 天**，到期需重新申请。
 -  解析质量因文档而异，不保证 100% 版式还原。
--  Agent 轻量模式仅输出 Markdown、单文件，并发等限制更严格。
+-  Agent 轻量模式仅输出 Markdown（长 PDF 自动拆分合并），按 IP 限频，并发限制更严格。
 
 <a id="privacy"></a>
 ## 🔐 数据与隐私
@@ -163,7 +163,7 @@ npm run tauri build    # 生产
 
 ```bash
 npm run typecheck
-npm run selftest       # 75/75
+npm run selftest       # 82/82
 cd src-tauri && cargo check
 ```
 
@@ -193,8 +193,8 @@ cd src-tauri && cargo check
 
 ## 👤 作者
 
-- Techno
+Techno
 - <a href="https://github.com/TechnoAtHere">github主页
 - <a href="https://gitee.com/ATWWW">Gitee主页
 
-<p align="center">❤️ Made by <a href="https://gitee.com/ATWWW">Techno ❤️ </a></p> 
+<p align="center">❤️ Made by <a href="https://gitee.com/ATWWW">Techno  </a> ❤️</p>

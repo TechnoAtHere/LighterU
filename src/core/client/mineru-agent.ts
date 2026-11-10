@@ -5,7 +5,8 @@
 //   PUT  data.file_url（仅传字节，不设 Content-Type）
 //   GET  {agentBase}/parse/{task_id} → data.state: waiting-file|uploading|pending|running|done|failed
 //        done → data.markdown_url；failed → data.err_code / data.err_msg
-// 限制：单文件 ≤10MB、≤20 页；仅 Markdown 输出。
+// 限制：单次上传 ≤10MB、≤20 页；仅 Markdown 输出。
+// 超过 20 页的 PDF 由 pipeline.runAgentSplit 按 20 页切分后逐片调用本客户端，再合并 Markdown。
 // 注意：本接口**不需要** Authorization。
 
 import { BmuError, classifyHttpFailure, isEnvelopeSuccess } from './errors'
@@ -94,9 +95,10 @@ export class MinerUAgentClient {
     payload.is_ocr = parse.isOcr
     payload.enable_table = parse.enableTable
     payload.enable_formula = parse.enableFormula
-    // Agent 仅支持单段页码范围（如 1-20）；多段逗号形态不传，交给服务端默认
+    // Agent 仅支持单段页码范围（如 1-20）；多段逗号形态不传，并明确告知而非静默丢弃用户设置。
     const range = (parse.pageRanges ?? '').trim()
     if (range && !range.includes(',')) payload.page_range = range
+    else if (range) this.onLog(`Agent 轻量解析仅支持单段页码范围（如 1-20），已忽略「${range}」`)
 
     const body = await this.apiJson('POST', '/parse/file', payload, signal)
     const data = typeof body.data === 'object' && body.data !== null ? (body.data as Record<string, unknown>) : {}

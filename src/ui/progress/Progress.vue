@@ -1,8 +1,8 @@
 <script setup lang="ts">
-// T4-06/D.8 轻量进度窗（UI 规格 §5）：右键「直接解析」打开；D.8 重做为**多文件**进度窗
-// （本质是工作站的进度组件，复用 FileList 行形态）。
-// 生命周期：mount → 监听 lu:direct-parse{filePaths} → createTask(N 文件) + submitAll 自动开始
-// → 经 TaskManager 订阅同步显示 → 全终态按 output.autoCloseProgress 自动关闭。
+// T4-06 轻量进度窗：右键「直接解析」打开，一次承接 Rust 侧聚合后的整批文件（复用 FileList 行形态）。
+// 生命周期：mount → lu_take_progress_files(label) 取走本窗暂存的整批文件
+// → createTask(N 文件) + submitAll 自动开始 → 经 TaskManager 订阅同步显示
+// → 全终态按 output.autoCloseProgress 自动关闭（关闭后由 Rust 侧延迟判定空闲退出）。
 import { onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
@@ -86,6 +86,9 @@ function maybeAutoClose(): void {
 onMounted(async () => {
   try {
     const config = await loadConfig({ store: createConfigStore(), secrets: createSecretsAdapter() });
+    // 右键进度窗恒定使用「右键入口」配置。生产代码不会持久化 output.entry=context-menu，
+    // 不在此显式设置会让 format/outputs 取自 rightClick、captionEnabled 与 destDir 取自 workbench（配置混用）。
+    config.output.entry = "context-menu";
     cfg = config;
     log("info", "progress", "mount");
     let store: Store | undefined;
@@ -153,6 +156,7 @@ async function startParse(filePaths: string[]): Promise<void> {
   // T5-F：热加载最新配置（设置可能在主窗口改过；进度窗常驻，需每次重载并应用到 TaskManager）
   try {
     const fresh = await loadConfig({ store: createConfigStore(), secrets: createSecretsAdapter() });
+    fresh.output.entry = "context-menu";
     cfg = fresh;
     tm.applyConfig(fresh);
   } catch {
@@ -176,8 +180,10 @@ async function startParse(filePaths: string[]): Promise<void> {
   });
   taskId.value = id;
   syncFiles();
-  // 「直接解析」语义：立即开始（不等用户点开始）；一次提交全部文件（并发，上限 50）
-  await tm.submitAll(id, Math.min(filePaths.length, 50));
+  // 「直接解析」语义：立即开始（不等用户点开始）；一次提交全部文件。
+  // Agent 轻量解析按 IP 限频（长 PDF 还会拆成多片逐片提交），文件间强制串行避免叠加触发 429。
+  const concurrency = cfg?.mineru.apiMode === "agent" ? 1 : Math.min(filePaths.length, 50);
+  await tm.submitAll(id, concurrency);
   log("info", "progress", "startParse", { taskId: id, count: filePaths.length });
 }
 
@@ -205,6 +211,12 @@ async function onFileRetry(fileId: string): Promise<void> {
   const tm = manager.value;
   const id = taskId.value;
   if (!tm || !id) return;
+  // 重试采用当时的配置方案（设置可能在主窗口改过）
+  try {
+    tm.applyConfig(await loadConfig({ store: createConfigStore(), secrets: createSecretsAdapter() }));
+  } catch {
+    // 重载失败沿用当前配置
+  }
   try {
     await tm.retryFile(id, fileId);
     syncFiles();
@@ -246,7 +258,7 @@ async function openDir(): Promise<void> {
 }
 
 /** 行内「图片解析」：对单个文件的输出目录重跑描述（进度窗与工作站共用执行器）。 */
-async function onFileCaption(job: Job): Promise<boolean> {
+async function onFileCaption(job: Job, signal?: AbortSignal): Promise<boolean> {
   if (!job.outputDir) return false;
   const tm = manager.value;
   let config = cfg;
@@ -273,11 +285,14 @@ async function onFileCaption(job: Job): Promise<boolean> {
   try {
     const model = config.multimodal.model?.trim() || "未指定";
     log("info", "caption", "manual.start", { dir: job.outputDir, model, provider: config.multimodal.baseUrl });
-    const result = await runJobCaption(config, job, (m) => log("info", "caption", "file.rerun", { message: m }));
+    const result = await runJobCaption(config, job, (m) => log("info", "caption", "file.rerun", { message: m }), signal);
     log("info", "caption", "manual.done", { dir: job.outputDir, model, described: result.described, failed: result.failed });
     return result.ok;
   } catch (err) {
-    log("error", "caption", "manual.failed", { message: err instanceof Error ? err.message : String(err) });
+    // 用户主动取消不记为错误日志
+    if (!signal?.aborted) {
+      log("error", "caption", "manual.failed", { message: err instanceof Error ? err.message : String(err) });
+    }
     return false;
   } finally {
     captionBusy.value -= 1;

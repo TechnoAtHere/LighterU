@@ -13,6 +13,8 @@ import { log as blog } from '../platform/logger'
 import { pushUserMessage, concludeUserMessage } from '../platform/user-feed'
 import { toUserMessageOrGeneric } from '../platform/user-messages'
 import { BmuError, isBmuError } from '../client/errors'
+import { withRetry, defaultShouldRetry } from '../client/retry'
+import { normalizeState } from '../client/compat'
 import { fingerprint } from '../caption/fingerprint'
 import { hashOptions, isResumeCompatible } from '../tasks/resume'
 import {
@@ -23,12 +25,14 @@ import {
   planParts,
   splitPdf,
 } from '../splitter'
-import type { MergePart } from '../splitter'
+import type { MergePart, PageRange } from '../splitter'
 import type { FsAdapter } from '../platform/fs'
 import type { HttpTransport } from '../platform/http'
 import type { Store } from '../store'
 import type {
   AppConfig,
+  CloudState,
+  ExtractedFile,
   ExtractedOutputs,
   OutputFormat,
   OutputKind,
@@ -81,7 +85,7 @@ export function validatePdf(fileName: string, head: Uint8Array): void {
   }
 }
 
-/** 支持的输入扩展名（精准解析：PDF / 图片 / Office；Agent 轻量同表但限制 10MB/20页） */
+/** 支持的输入扩展名（精准解析：PDF / 图片 / Office；Agent 轻量同表，单次上传 ≤10MB、≤20 页，长 PDF 自动拆分） */
 export const SUPPORTED_INPUT_EXTS = [
   'pdf',
   'png',
@@ -172,79 +176,245 @@ async function retainParts(fs: FsAdapter, debugDir: string, collected: MergePart
   }
 }
 
-/** T3-09 拆分分支：count → plan → split → 逐分片 submit/poll/download/extract → merge → 落盘 */
-async function runSplit(
+/** 通用编排器传给各模式配置的单片上下文 */
+interface SplitPartArgs {
+  partName: string
+  partBytes: Uint8Array
+  partIndex: number
+  partCount: number
+  pageRange: PageRange
+  deps: RunJobDeps
+  signal: AbortSignal
+  onPhase: (p: PipelinePhase) => void
+  onLog: (message: string) => void
+  onProgress: (p: { extractedPages?: number; totalPages?: number; cloudState?: CloudState }) => void
+}
+
+interface SplitPartOutcome<P> {
+  output: P
+  /** 上传批次 id（Agent 无独立批次，复用 taskId） */
+  batchId: string
+  /** 云端任务 id */
+  taskId: string
+}
+
+interface SplitMergeResult {
+  files: ExtractedFile[]
+  /** writeOutputs 未给出 markdownPath 时的兜底 */
+  fallbackMarkdownPath: string | null
+}
+
+/**
+ * 解析模式的差异全部收在这里；拆分编排逻辑只有 runSplitWithProfile 一份。
+ * 精准与 Agent 只传入不同的 SplitProfile（分片大小、单片提交/下载、合并语义、落盘选项、失败保留）。
+ */
+interface SplitProfile<P> {
+  mode: 'precise' | 'agent'
+  maxPagesPerPart: number
+  maxPartBytes: number
+  partTooLarge(bytes: number, index: number): BmuError
+  onBeforeSplit?(deps: RunJobDeps, onLog: (message: string) => void): void
+  runPart(args: SplitPartArgs): Promise<SplitPartOutcome<P>>
+  merge(parts: P[]): SplitMergeResult
+  writeOptions(deps: RunJobDeps): { format: OutputFormat; kinds?: OutputKind[]; sameName?: SameNameHandling }
+  retainOnFailure?(args: { parts: P[]; destDir: string; deps: RunJobDeps }): Promise<void>
+}
+
+/** 共用的自动拆分编排：count → plan → split → 逐片 runPart → merge → writeOutputs。 */
+async function runSplitWithProfile<P>(
+  profile: SplitProfile<P>,
   deps: RunJobDeps,
-  client: MinerUCloudClient,
   bytes: Uint8Array,
   fileName: string,
   destDir: string,
-): Promise<{ outputDir: string; markdownPath: string | null; batchId: string; taskId: string; partCount: number }> {
-  const { config, fs, onEvent, signal } = deps
+  startedAt: number,
+  totalPages: number,
+): Promise<PipelineResult> {
+  const { fs, onEvent, signal } = deps
   const log = (message: string) => onEvent({ type: 'log', message })
   const phase = (p: PipelinePhase) => onEvent({ type: 'phase', phase: p })
   const stem = stemOf(fileName)
 
-  const totalPages = await countPdfPages(bytes)
-  const ranges = planParts(totalPages, MAX_PAGES_PER_PART)
-  log(`PDF 共 ${totalPages} 页，超过 ${MAX_PAGES_PER_PART} 页上限，拆分为 ${ranges.length} 个分片`)
+  const ranges = planParts(totalPages, profile.maxPagesPerPart)
+  log(`PDF 共 ${totalPages} 页，超过 ${profile.maxPagesPerPart} 页上限，拆分为 ${ranges.length} 个分片`)
+  profile.onBeforeSplit?.(deps, log)
   const partBytes = await splitPdf(bytes, ranges)
 
-  const collected: MergePart[] = []
-  let firstBatchId = ''
-  let lastTaskId = ''
-  const debugDir = `${destDir.replace(/[\\/]+$/, '')}/_lusplit_debug`
-
-  for (let i = 0; i < ranges.length; i += 1) {
-    const partName = `split_part_${i + 1}.pdf`
-    try {
+  const splitId = `split-${fileName}`
+  pushUserMessage(toUserMessageOrGeneric('split.progress', {}), { id: splitId })
+  const collected: P[] = []
+  try {
+    let firstBatchId = ''
+    let lastTaskId = ''
+    for (let i = 0; i < ranges.length; i += 1) {
+      throwIfAborted(signal, 'uploading')
+      const partName = `split_part_${i + 1}.pdf`
+      if (partBytes[i].length > profile.maxPartBytes) {
+        throw profile.partTooLarge(partBytes[i].length, i + 1)
+      }
       phase('uploading')
       log(`提交分片 ${i + 1}/${ranges.length}（第 ${ranges[i].start}-${ranges[i].end} 页）`)
-      const { batchId, uploadUrl } = await client.requestUploadUrl({ fileName: partName, parse: config.mineru.parse }, signal)
-      if (i === 0) firstBatchId = batchId
-      await client.uploadFile(uploadUrl, partBytes[i], signal)
+      // 状态列显示「解析中（1/4）」：分片进度经任务层写入 Job.progress
+      onEvent({ type: 'progress', partIndex: i + 1, partTotal: ranges.length })
+      const part = await profile.runPart({
+        partName,
+        partBytes: partBytes[i],
+        partIndex: i,
+        partCount: ranges.length,
+        pageRange: ranges[i],
+        deps,
+        signal,
+        onPhase: phase,
+        onLog: log,
+        onProgress: (p) => onEvent({ type: 'progress', ...p }),
+      })
+      collected.push(part.output)
+      if (i === 0) firstBatchId = part.batchId
+      lastTaskId = part.taskId
+    }
 
-      phase('polling')
+    const merged = profile.merge(collected)
+    phase('writing')
+    throwIfAborted(signal, 'writing')
+    const result = await writeOutputs(fs, merged.files, destDir, stem, profile.writeOptions(deps))
+    concludeUserMessage(splitId, toUserMessageOrGeneric('split.done', { count: ranges.length }))
+    log(`已合并 ${ranges.length} 个分片并写入：${result.markdownPath ?? result.outputDir}`)
+    phase('done')
+    const kb = Math.round(merged.files.reduce((s, f) => s + f.data.length, 0) / 1024)
+    blog('info', 'pipeline', 'split.done', { mode: profile.mode, parts: ranges.length, taskId: lastTaskId, kb })
+    return {
+      outputDir: result.outputDir,
+      markdownPath: result.markdownPath ?? merged.fallbackMarkdownPath,
+      batchId: firstBatchId,
+      taskId: lastTaskId,
+      durationMs: Date.now() - startedAt,
+    }
+  } catch (err) {
+    await profile.retainOnFailure?.({ parts: collected, destDir, deps })
+    concludeUserMessage(splitId, toUserMessageOrGeneric('generic.error', { message: `自动拆分失败：${err instanceof Error ? err.message : String(err)}` }))
+    throw err
+  }
+}
+
+/** 精准解析配置：200 页一片，ZIP 产物经 mergeResults 合并 full.md / content_list / images。 */
+function preciseSplitProfile(client: MinerUCloudClient): SplitProfile<MergePart> {
+  return {
+    mode: 'precise',
+    maxPagesPerPart: MAX_PAGES_PER_PART,
+    maxPartBytes: 200 * 1024 * 1024,
+    partTooLarge: (n, i) => new BmuError('limit', `分片 ${i} 超过精准解析 200MB 上限（${(n / 1024 / 1024).toFixed(1)}MB）。`, { code: 'PART_TOO_LARGE', stage: 'validating' }),
+    onBeforeSplit: (d, log) => {
+      // mergeResults 只合并 Markdown / JSON / 图片；DOCX / HTML 分片产出无法合并，明确告知。
+      if (d.config.mineru.parse.extraFormats.length > 0) {
+        log('自动拆分路径仅合并 Markdown / JSON / 图片，DOCX / HTML 等额外格式在本次不会产出')
+      }
+    },
+    runPart: async ({ partName, partBytes, pageRange, deps, signal, onPhase, onProgress }) => {
+      const { config } = deps
+      // 分片只用于合并 Markdown / JSON / 图片，故不注入 extra_formats。
+      const { batchId, uploadUrl } = await client.requestUploadUrl(
+        { fileName: partName, parse: { ...config.mineru.parse, extraFormats: [] } },
+        signal,
+      )
+      await client.uploadFile(uploadUrl, partBytes, signal)
+
+      onPhase('polling')
       const status = await client.waitForCompletion(batchId, {
         signal,
-        onProgress: (s) => {
-          onEvent({ type: 'progress', extractedPages: s.extractedPages ?? undefined, totalPages: s.totalPages ?? undefined })
-        },
+        onProgress: (s) => onProgress({
+          extractedPages: s.extractedPages ?? undefined,
+          totalPages: s.totalPages ?? undefined,
+          cloudState: s.state,
+        }),
       })
-      lastTaskId = status.taskId
-
-      phase('downloading')
+      onPhase('downloading')
       throwIfAborted(signal, 'downloading')
       const zipBytes = await client.downloadResultWithFallback(status, () => client.getTaskStatus(status.taskId, signal), signal)
 
-      phase('extracting')
+      onPhase('extracting')
       throwIfAborted(signal, 'extracting')
       const files = safeExtractZip(zipBytes, config.limits)
-      collected.push({ outputs: scanOutputs(files), pageCount: ranges[i].end - ranges[i].start + 1 })
-    } catch (err) {
-      // 保留已下载分片，再抛出（整体失败）
-      await retainParts(fs, debugDir, collected)
-      throw err
-    }
+      return {
+        output: { outputs: scanOutputs(files), pageCount: pageRange.end - pageRange.start + 1 },
+        batchId,
+        taskId: status.taskId,
+      }
+    },
+    merge: (parts) => {
+      const merged = mergeResults(parts)
+      return { files: merged.files, fallbackMarkdownPath: firstMarkdown(merged) }
+    },
+    // 图片解析保护：captionEnabled 时强制落盘完整产物（D-97/D-99），必须原样保留。
+    writeOptions: (d) => ({ format: effectiveOutputFormat(d), kinds: effectiveKinds(d), sameName: d.sameNameHandling }),
+    retainOnFailure: async ({ parts, destDir, deps }) => {
+      const debugDir = `${destDir.replace(/[\\/]+$/, '')}/_lusplit_debug`
+      await retainParts(deps.fs, debugDir, parts)
+    },
   }
+}
 
-  const merged = mergeResults(collected)
-  phase('writing')
-  throwIfAborted(signal, 'writing')
-  const result = await writeOutputs(fs, merged.files, destDir, stem, { format: effectiveOutputFormat(deps), kinds: effectiveKinds(deps), sameName: deps.sameNameHandling })
-  log(`已合并 ${ranges.length} 个分片并写入：${result.outputDir}`)
+/** Agent 轻量 API 单文件页数/体积上限（自动拆分时按 20 页一片切分） */
+const MAX_AGENT_PAGES_PER_PART = 20
+const AGENT_MAX_BYTES = 10 * 1024 * 1024
+
+/** 按分片顺序拼接 Markdown：与 mergeResults 的 full.md "\n\n" 口径一致，按字节拼避免编解码损耗。 */
+function joinMarkdownParts(parts: Uint8Array[]): Uint8Array {
+  const sep = new TextEncoder().encode('\n\n')
+  const total = parts.reduce((s, p) => s + p.length, 0) + sep.length * Math.max(0, parts.length - 1)
+  const out = new Uint8Array(total)
+  let off = 0
+  parts.forEach((p, i) => {
+    if (i > 0) {
+      out.set(sep, off)
+      off += sep.length
+    }
+    out.set(p, off)
+    off += p.length
+  })
+  return out
+}
+
+/** Agent 配置：20 页一片，逐片返回的 Markdown 按序拼接为一份 full.md。 */
+function agentSplitProfile(client: MinerUAgentClient): SplitProfile<Uint8Array> {
   return {
-    outputDir: result.outputDir,
-    markdownPath: result.markdownPath ?? firstMarkdown(merged),
-    batchId: firstBatchId,
-    taskId: lastTaskId,
-    partCount: ranges.length,
+    mode: 'agent',
+    maxPagesPerPart: MAX_AGENT_PAGES_PER_PART,
+    maxPartBytes: AGENT_MAX_BYTES,
+    partTooLarge: (n, i) => new BmuError('limit', `分片 ${i} 仍超过 Agent 单文件 10MB 上限（${(n / 1024 / 1024).toFixed(1)}MB）——请到「设置 → MinerU」切换为「精准解析 API」。`, { code: 'AGENT_PART_TOO_LARGE', stage: 'validating' }),
+    runPart: async ({ partName, partBytes, partIndex, deps, signal, onPhase, onLog, onProgress }) => {
+      const { config } = deps
+      // 已本地切分：清掉 page_range，避免服务端二次截取导致内容错乱。
+      const partParse: ParseOptions = { ...config.mineru.parse, pageRanges: '' }
+      // 分片数增多会放大 IP 限频（429）：仅对提交做退避重试。
+      const sub = await withRetry(() => client.submitFile(partName, partParse, signal), {
+        maxAttempts: Math.max(1, config.mineru.maxAttempts),
+        stage: 'agent/parse/file',
+        signal,
+        shouldRetry: defaultShouldRetry,
+        onRetry: (attempt, delay) => onLog(`分片 ${partIndex + 1} 提交被限流，${delay.toFixed(1)}s 后重试（第 ${attempt} 次）`),
+      })
+      await client.upload(sub.fileUrl, partBytes, signal)
+
+      onPhase('polling')
+      const status = await client.waitForTask(sub.taskId, {
+        signal,
+        // Agent 的 waiting-file / pending / running / done / failed 也归一到统一云端状态
+        onStatus: (s) => onProgress({ cloudState: normalizeState(s.state) }),
+      })
+      onPhase('downloading')
+      throwIfAborted(signal, 'downloading')
+      const md = await client.downloadMarkdown(status.markdownUrl as string, signal)
+      // Agent 无独立批次 id，batchId 复用 taskId（与原实现一致）。
+      return { output: md, batchId: sub.taskId, taskId: sub.taskId }
+    },
+    merge: (parts) => ({ files: [{ path: 'full.md', data: joinMarkdownParts(parts) }], fallbackMarkdownPath: null }),
+    writeOptions: (d) => ({ format: 'markdown', sameName: d.sameNameHandling }),
   }
 }
 
 /**
  * Agent 轻量解析分支（免 Token）：提交 → 签名上传 → 轮询 → 下载 markdown_url → 落盘 <stem>.md。
- * 限制：单文件 ≤10MB、≤20 页；仅 Markdown 输出。
+ * 单文件 ≤10MB；PDF 超过 20 页时与精准模式一致自动拆分、逐片上传并合并 Markdown。
  */
 async function runAgentJob(
   input: PipelineInput,
@@ -260,31 +430,30 @@ async function runAgentJob(
   const ext = (fileName.toLowerCase().split('.').pop() ?? '').trim()
   const mb = bytes.length / (1024 * 1024)
 
+  // Agent 仅返回 Markdown 文本、无图片目录：把「用户勾选但不生效」的选项显式告知，避免静默失效。
+  if (deps.outputs && deps.outputs.some((k) => k !== 'markdown')) {
+    log('Agent 轻量解析仅输出 Markdown；已忽略 JSON / DOCX / HTML / 图片等输出选项')
+  }
+  if (deps.captionEnabled) {
+    log('Agent 轻量解析不返回图片目录，图片描述在本次不会执行')
+  }
+
   // Agent 轻量解析支持：PDF、图片、Docx/PPTx/Xls/Xlsx（不含旧版 doc/ppt）
   const AGENT_EXTS = ['pdf', 'png', 'jpg', 'jpeg', 'jp2', 'webp', 'gif', 'bmp', 'docx', 'pptx', 'xls', 'xlsx']
   if (!AGENT_EXTS.includes(ext)) {
     throw new BmuError(
       'unsupported',
-      `Agent 轻量解析不支持 .${ext}（仅支持 PDF、图片、Docx/PPTx/Xls/Xlsx）——请改用精准解析。`,
+      `Agent 轻量解析不支持 .${ext}（仅支持 PDF、图片、Docx/PPTx/Xls/Xlsx）——请到「设置 → MinerU」切换为「精准解析 API」后重试。`,
       { code: 'AGENT_UNSUPPORTED_FORMAT', stage: 'validating' },
     )
   }
 
-  if (bytes.length > 10 * 1024 * 1024) {
-    throw new BmuError('business', `Agent 轻量解析单文件上限 10MB（当前 ${mb.toFixed(1)}MB）——请改用精准解析。`, {
-      code: 'AGENT_FILE_TOO_LARGE',
-      stage: 'validating',
-    })
-  }
-  if (ext === 'pdf') {
+  const isPdf = ext === 'pdf'
+  const userRange = config.mineru.parse.pageRanges.trim()
+  let totalPages = 0
+  if (isPdf) {
     try {
-      const pages = await countPdfPages(bytes)
-      if (pages > 20) {
-        throw new BmuError('business', `Agent 轻量解析最多 20 页（当前 ${pages} 页）——请改用精准解析。`, {
-          code: 'AGENT_PAGE_LIMIT',
-          stage: 'validating',
-        })
-      }
+      totalPages = await countPdfPages(bytes)
     } catch (err) {
       if (isBmuError(err)) throw err
       // 页数解析失败不阻断（交由服务端判定）
@@ -293,6 +462,23 @@ async function runAgentJob(
   }
 
   const client = new MinerUAgentClient({ config, transport, onLog: log })
+
+  // 与精准模式一致：超过 Agent 单文件页数上限 → 自动拆分、逐片上传、合并 Markdown。
+  // 用户显式指定页码范围时不接管（交由服务端按范围解析），避免本地切分与 page_range 二次截取冲突。
+  if (isPdf && !userRange && totalPages > MAX_AGENT_PAGES_PER_PART) {
+    return await runSplitWithProfile(agentSplitProfile(client), deps, bytes, fileName, destDir, startedAt, totalPages)
+  }
+  if (isPdf && userRange && totalPages > MAX_AGENT_PAGES_PER_PART) {
+    log(`已指定页码范围「${userRange}」，跳过自动拆分；若范围超过 ${MAX_AGENT_PAGES_PER_PART} 页可能被服务端拒绝`)
+  }
+
+  // 未进入拆分路径时才校验整文件体积（拆分后按每片单独校验）。
+  if (bytes.length > AGENT_MAX_BYTES) {
+    throw new BmuError('business', `Agent 轻量解析单文件上限 10MB（当前 ${mb.toFixed(1)}MB）——请到「设置 → MinerU」切换为「精准解析 API」后重试。`, {
+      code: 'AGENT_FILE_TOO_LARGE',
+      stage: 'validating',
+    })
+  }
   phase('uploading')
   const sub = await client.submitFile(fileName, config.mineru.parse, signal)
   log(`Agent 任务已提交（${sub.taskId}），正在上传…`)
@@ -316,16 +502,19 @@ async function runAgentJob(
   const md = await client.downloadMarkdown(status.markdownUrl as string, signal)
 
   phase('writing')
-  await fs.ensureDir(destDir)
+  // 复用 writeOutputs 的 markdownOnly 分支：与精准模式共用同名处理（suffix / overwrite）和
+  // markdownPath 定位，避免直接写 ${stem}.md 覆盖已有结果（原实现忽略 sameNameHandling）。
   const stem = stemOf(fileName)
-  const markdownPath = `${destDir}/${stem}.md`
-  await fs.writeFileBytes(markdownPath, md)
-  log(`已写入 ${markdownPath}`)
+  const result = await writeOutputs(fs, [{ path: 'full.md', data: md }], destDir, stem, {
+    format: 'markdown',
+    sameName: deps.sameNameHandling,
+  })
+  log(`已写入 ${result.markdownPath ?? destDir}`)
   phase('done')
   blog('info', 'pipeline', 'agent.done', { taskId: sub.taskId, kb: Math.round(md.length / 1024) })
   return {
-    outputDir: destDir,
-    markdownPath,
+    outputDir: result.outputDir,
+    markdownPath: result.markdownPath,
     batchId: sub.taskId,
     taskId: sub.taskId,
     durationMs: Date.now() - startedAt,
@@ -358,8 +547,15 @@ export async function runParseJob(input: PipelineInput, deps: RunJobDeps): Promi
   phase('validating')
   throwIfAborted(signal, 'validating')
   phase('reading')
-  // 读取前上限校验（精准 200MB / Agent 10MB），避免超大文件整体读入内存导致 OOM
-  const sizeLimit = config.mineru.apiMode === 'agent' ? 10 * 1024 * 1024 : 200 * 1024 * 1024
+  // 读取前上限校验，避免超大文件整体读入内存导致 OOM。
+  // Agent PDF（未指定页码范围）可自动拆分，预检放宽到 200MB，10MB 上限改由共用编排器按每片校验；
+  // 其余 Agent 输入（图片/Office，无法按页拆分）仍保留 10MB 预检。
+  const agentSplitCandidate = config.mineru.apiMode === 'agent'
+    && input.filePath.toLowerCase().endsWith('.pdf')
+    && !config.mineru.parse.pageRanges.trim()
+  const sizeLimit = config.mineru.apiMode === 'agent' && !agentSplitCandidate
+    ? 10 * 1024 * 1024
+    : 200 * 1024 * 1024
   if (fs.stat) {
     try {
       const info = await fs.stat(input.filePath)
@@ -381,7 +577,7 @@ export async function runParseJob(input: PipelineInput, deps: RunJobDeps): Promi
   log(`已读取 ${fileName}（${(bytes.length / 1024).toFixed(1)} KB）`)
   blog('debug', 'pipeline', 'read.done', { file: fileName, kb: Math.round(bytes.length / 1024) })
 
-  // Agent 轻量解析：免 Token，单文件 ≤10MB/≤20 页，仅 Markdown 输出
+  // Agent 轻量解析：免 Token，单次上传 ≤10MB；>20 页 PDF 由共用编排器 + agentSplitProfile 拆分合并
   if (config.mineru.apiMode === 'agent') {
     blog('info', 'pipeline', 'agent.branch', { file: fileName })
     return await runAgentJob(input, deps, bytes, destDir, startedAt)
@@ -391,6 +587,15 @@ export async function runParseJob(input: PipelineInput, deps: RunJobDeps): Promi
   const persist = store && taskId ? { store, taskId } : null
   const fp = fingerprint(bytes)
   const optionsHash = hashOptions({ ...config.mineru.parse, entry: config.output.entry })
+
+  /** 精准模式自动拆分入口：本地页数预判与服务端 -60006 共用同一编排器与配置。 */
+  const enterSplit = async (reason: string, totalPages?: number): Promise<PipelineResult> => {
+    blog('debug', 'pipeline', 'upload.splitBranch', { file: fileName, reason })
+    log(reason)
+    // 本地预判已算过页数时直接复用，避免重复解析 PDF 结构。
+    const pages = totalPages ?? await countPdfPages(bytes)
+    return await runSplitWithProfile(preciseSplitProfile(client), deps, bytes, fileName, destDir, startedAt, pages)
+  }
 
   // 2) 申请上传 URL + PUT（上传完成自动提交解析）；-60006 → 拆分分支
   phase('uploading')
@@ -408,32 +613,29 @@ export async function runParseJob(input: PipelineInput, deps: RunJobDeps): Promi
   }
 
   if (!reused) {
+    // 兜底：真实服务可能在上传/轮询阶段才判页数超限，届时 -60006 已被包成 PARSE_FAILED 而丢失。
+    // 对未指定页码范围的 PDF 先本地读页数，超限直接拆分，不依赖服务端错误码；读页数失败则降级走原路径。
+    if (fileName.toLowerCase().endsWith('.pdf') && !config.mineru.parse.pageRanges.trim()) {
+      try {
+        const pages = await countPdfPages(bytes)
+        if (pages > MAX_PAGES_PER_PART) {
+          return await enterSplit(`PDF 共 ${pages} 页，超过 ${MAX_PAGES_PER_PART} 页上限，进入自动拆分`, pages)
+        }
+      } catch (pageErr) {
+        blog('warn', 'pipeline', 'preSplit.pageCountFailed', { message: pageErr instanceof Error ? pageErr.message : String(pageErr) })
+      }
+    }
+
     let up: { batchId: string; uploadUrl: string }
     try {
       blog('debug', 'pipeline', 'upload.start', { file: fileName })
-      up = await client.requestUploadUrl({ fileName, parse: config.mineru.parse }, signal)
+      // D-98：按输出多选推导 parse 选项（DOCX / HTML 需服务端生成，必须在请求阶段声明）。
+      // 此前传原始 config.mineru.parse，使 effectiveParseOptions 的结果从未进入请求体。
+      up = await client.requestUploadUrl({ fileName, parse: effectiveParseOptions(deps) }, signal)
     } catch (err) {
       // 自动拆分仅适用于 PDF（Office/图片无 PDF 切片语义）
       if (isPageLimitError(err) && fileName.toLowerCase().endsWith('.pdf')) {
-        blog('debug', 'pipeline', 'upload.splitBranch', { file: fileName })
-        log('页数超限（-60006），进入自动拆分分支')
-        const splitId = `split-${fileName}`
-        pushUserMessage(toUserMessageOrGeneric('split.progress', {}), { id: splitId })
-        try {
-          const split = await runSplit(deps, client, bytes, fileName, destDir)
-          concludeUserMessage(splitId, toUserMessageOrGeneric('split.done', { count: split.partCount }))
-          phase('done')
-          return {
-            outputDir: split.outputDir,
-            markdownPath: split.markdownPath,
-            batchId: split.batchId,
-            taskId: split.taskId,
-            durationMs: Date.now() - startedAt,
-          }
-        } catch (splitErr) {
-          concludeUserMessage(splitId, toUserMessageOrGeneric('generic.error', { message: `自动拆分失败：${splitErr instanceof Error ? splitErr.message : String(splitErr)}` }))
-          throw splitErr
-        }
+        return await enterSplit('页数超限（-60006），进入自动拆分分支')
       }
       throw err
     }
@@ -459,9 +661,12 @@ export async function runParseJob(input: PipelineInput, deps: RunJobDeps): Promi
     const status = await client.waitForCompletion(batchId, {
       signal,
       onProgress: (s) => {
-        onEvent({ type: 'progress', extractedPages: s.extractedPages ?? undefined, totalPages: s.totalPages ?? undefined })
+        // 官方 v4 state：pending 排队中 / running 正在解析 / converting 格式转换中 / done 完成 / failed 失败
+        onEvent({ type: 'progress', extractedPages: s.extractedPages ?? undefined, totalPages: s.totalPages ?? undefined, cloudState: s.state })
         if (s.extractedPages !== null && s.totalPages !== null) {
-          log(`解析进度 ${s.extractedPages}/${s.totalPages} 页`)
+          log(`解析进度 ${s.extractedPages}/${s.totalPages} 页（状态：${s.state}）`)
+        } else {
+          log(`云端状态：${s.state}`)
         }
       },
     })

@@ -118,13 +118,39 @@ export function onHistoryChanged(handler: (taskId?: string) => void): () => void
   return subscribe<{ taskId?: string }>(LU_EVENTS.history, (p) => handler(p?.taskId))
 }
 
-/** T4-07/右键：第二实例或首次启动的 CLI 命令（Rust 侧 lu:cli-command） */
+/** T4-07/右键：Rust 侧 lu:cli-command。方案 A 下 parse 的 file_paths 为聚合后的整批文件。 */
 export interface CliCommandPayload {
   action: string;
-  /** D.8：parse 支持多文件（右键多选一次传参）；其余动作为 null */
+  /** parse：Rust 侧聚合后的整批文件路径；其余动作为 null */
   file_paths?: string[] | null;
 }
 
-export function onCliCommand(handler: (p: CliCommandPayload) => void): () => void {
-  return subscribe<CliCommandPayload>(LU_EVENTS.cli, handler)
+/**
+ * `onReady` 在 Tauri `listen` 真正注册成功后触发。
+ * 方案 A 依赖它通知 Rust 标记 frontend_ready：flusher 必须等订阅建立后才下发批次，
+ * 否则冷启动时（main 隐藏、配置/DB 初始化较慢）整批 parse 事件会在订阅前 emit 而丢失。
+ */
+export function onCliCommand(handler: (p: CliCommandPayload) => void, onReady?: () => void): () => void {
+  if (!isTauri()) {
+    const off = localOn(LU_EVENTS.cli, (detail) => handler(detail as CliCommandPayload))
+    onReady?.()
+    return off
+  }
+  let un: (() => void) | null = null
+  let cancelled = false
+  void import('@tauri-apps/api/event')
+    .then(({ listen }) => listen<CliCommandPayload>(LU_EVENTS.cli, (e) => handler(e.payload)))
+    .then((u) => {
+      un = u
+      if (cancelled) {
+        u()
+        return
+      }
+      onReady?.()
+    })
+    .catch(() => onReady?.()) // 订阅失败也放行，Rust 侧另有 10s 就绪兜底
+  return () => {
+    cancelled = true
+    un?.()
+  }
 }

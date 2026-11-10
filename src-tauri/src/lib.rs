@@ -2,17 +2,75 @@
 // 插件（T1-02）：opener / fs / sql / store / dialog / http / single-instance（T4-07）。
 // 自定义命令（commands.rs）：任意路径文件 IO（std::fs + 长路径前缀）+ DPAPI 密钥保护。
 // cli.rs（T4-07/右键传参）：命令行解析 + 首次启动意图拉取。
+// parse_batch.rs（方案 A）：右键多选文件在 Rust 侧聚合，规避 "%1" 逐进程启动与冷启动事件丢失。
 // registry.rs（T4-01）：右键菜单 HKCU 每用户注册（P-5）。
 // 不做托盘、不做悬浮窗（D-02、D-13）。
 
 mod cli;
 mod commands;
+mod parse_batch;
 mod registry;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::Manager;
+use parse_batch::PendingParse;
+
+/// 供 tauri command 访问多选聚合状态（Arc 与 setup / 单实例回调 / flusher 共享同一实例）。
+pub struct PendingParseState(pub Arc<PendingParse>);
+
+/// 进度窗关闭后的空闲退出：延迟宽限期后，仅当 main 不可见、无残留进度窗、批次已清空才退出。
+/// 统一覆盖两条关闭路径——用户点 X（CloseRequested）与 JS 调 lu_close_progress（destroy），
+/// 后者不触发 CloseRequested。宽限期内晚到的右键进程仍可 append 并被 flusher 处理。
+fn schedule_idle_exit(app: tauri::AppHandle, pending: Arc<PendingParse>) {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(parse_batch::EXIT_GRACE_MS + 200));
+        if !pending.can_exit(Instant::now()) {
+            return;
+        }
+        let main_visible = app
+            .get_webview_window("main")
+            .and_then(|w| w.is_visible().ok())
+            .unwrap_or(false);
+        if main_visible {
+            return;
+        }
+        if app.webview_windows().keys().any(|k| k.starts_with("progress-")) {
+            return;
+        }
+        lu_log("info", "rust", "idle.exit", None, serde_json::json!({ "ok": true }));
+        app.exit(0);
+    });
+}
+
+/// 多选批次 flusher（Tauri 胶水层）：轮询到点后一次性下发整批 parse 命令。
+/// 纯状态逻辑在 parse_batch.rs，保持其可独立单测。
+fn spawn_parse_flusher(app: tauri::AppHandle, pending: Arc<PendingParse>) {
+    use tauri::Emitter as _;
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(parse_batch::POLL_MS));
+        let now = Instant::now();
+        if !pending.is_ready() && !pending.ready_timeout_elapsed(now) {
+            continue;
+        }
+        if let Some(files) = pending.take_if_due(now) {
+            lu_log(
+                "info",
+                "rust",
+                "parse.batch.flush",
+                None,
+                serde_json::json!({ "file_count": files.len(), "files": files }),
+            );
+            let cmd = cli::CliCommand {
+                action: "parse".into(),
+                file_paths: Some(files),
+            };
+            let _ = app.emit(cli::CLI_EVENT, cmd);
+        }
+    });
+}
 
 /// D.12：Rust 链路日志落盘目录（发布版无控制台，写文件便于排查；dev 仍同时打 stderr）
 static LOG_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
@@ -81,9 +139,11 @@ struct ProgressFiles(Mutex<HashMap<String, Vec<String>>>);
 async fn lu_open_progress(
     app: tauri::AppHandle,
     state: tauri::State<'_, ProgressFiles>,
+    pending_state: tauri::State<'_, PendingParseState>,
     file_paths: Vec<String>,
 ) -> Result<String, String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
+    let pending = pending_state.0.clone();
     static PROGRESS_SEQ: AtomicU32 = AtomicU32::new(0);
     let seq = PROGRESS_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
     let label = format!("progress-{seq}");
@@ -109,17 +169,13 @@ async fn lu_open_progress(
         let _ = win.set_always_on_top(true);
         let _ = win.set_focus();
 
-        // G·3：关闭即销毁（每轮独立窗口，不复用）；main 隐藏时（首启 --parse 唯一可见窗）随应用退出
+        // G·3：关闭即销毁（每轮独立窗口，不复用）。
+        // 空闲退出改为延迟判定：宽限期内晚到的右键进程仍可并入后续批次，避免冷启动多选丢文件。
         let h = app2.clone();
+        let pending_for_close = pending.clone();
         win.on_window_event(move |event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
-                let main_visible = h
-                    .get_webview_window("main")
-                    .and_then(|w| w.is_visible().ok())
-                    .unwrap_or(false);
-                if !main_visible {
-                    h.exit(0);
-                }
+                schedule_idle_exit(h.clone(), pending_for_close.clone());
             }
         });
         Ok::<String, String>(label2)
@@ -164,20 +220,47 @@ fn lu_show_workbench(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn lu_close_progress(app: tauri::AppHandle, label: String) -> Result<(), String> {
+fn lu_close_progress(
+    app: tauri::AppHandle,
+    label: String,
+    pending_state: tauri::State<'_, PendingParseState>,
+) -> Result<(), String> {
     // 安全：只允许关闭进度窗，禁止销毁主窗口等其它窗口
     if !label.starts_with("progress-") {
         return Err("仅允许关闭进度窗".to_string());
     }
     if let Some(w) = app.get_webview_window(&label) {
-        w.destroy().map_err(|e| e.to_string())
-    } else {
-        Ok(())
+        w.destroy().map_err(|e| e.to_string())?;
     }
+    // destroy 不触发 CloseRequested：自动关闭路径必须在此显式排空闲退出，
+    // 否则冷启动 --parse 后留下无窗口的残留进程；延迟判定同时给晚到文件留窗口。
+    schedule_idle_exit(app, pending_state.0.clone());
+    Ok(())
+}
+
+/// 前端在 `onCliCommand` 订阅建立后调用：标记就绪，flusher 此后才下发聚合批次，
+/// 避免 emit 早于前端订阅导致整批文件丢失。
+#[tauri::command]
+fn lu_mark_cli_ready(pending: tauri::State<'_, PendingParseState>) {
+    pending.0.set_ready();
+    lu_log(
+        "info",
+        "rust",
+        "cli.subscriberReady",
+        None,
+        serde_json::json!({ "ok": true, "batch_size": pending.0.len() }),
+    );
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 方案 A：右键多选聚合状态。setup / 单实例回调 / flusher / 空闲退出共享同一实例。
+    let pending = Arc::new(PendingParse::default());
+    // debug 构建不注册单实例插件（D-81），此时该 clone 未使用。
+    #[allow(unused_variables)]
+    let pending_plugin = pending.clone();
+    let pending_setup = pending.clone();
+
     // debug 构建不注册单实例插件（D-81），故 `mut` 在 dev 下未使用；release 需要它。
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
@@ -193,12 +276,11 @@ pub fn run() {
     // dev 由用户手动保证不重复启动（tauri CLI 也会阻止重复 dev），release 仍保留单实例。
     #[cfg(not(debug_assertions))]
     {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        builder = builder.plugin(tauri_plugin_single_instance::init(move |app, argv, _cwd| {
             use tauri::Emitter as _;
             use tauri::Manager as _;
             let action = cli::parse_launch_args(&argv);
-            // D.8：直接解析（含多文件）不抢占主工作站焦点——由前端开进度窗并聚焦；
-            // 仅"打开工作站/设置"类动作才聚焦主窗口。
+            // 直接解析不抢占主工作站焦点——由前端开进度窗并聚焦；仅"打开工作站/设置"类动作才聚焦主窗口。
             let focused_main = !matches!(action, cli::LaunchAction::DirectParse(_));
             if focused_main {
                 if let Some(win) = app.get_webview_window("main") {
@@ -220,7 +302,28 @@ pub fn run() {
                     "argv": argv,
                 }),
             );
-            let _ = app.emit(cli::CLI_EVENT, action.to_command());
+            match &action {
+                // 方案 A：shell 用 "%1" 逐文件启动进程，每次转发只有一个路径。
+                // 不再逐条 emit，改为并入 Rust 侧批次，由 flusher 聚合后一次性下发整批。
+                cli::LaunchAction::DirectParse(paths) => {
+                    let added = pending_plugin.append(paths);
+                    lu_log(
+                        "info",
+                        "rust",
+                        "parse.batch.append",
+                        None,
+                        serde_json::json!({
+                            "source": "single_instance",
+                            "incoming": paths.len(),
+                            "added": added,
+                            "batch_size": pending_plugin.len(),
+                        }),
+                    );
+                }
+                _ => {
+                    let _ = app.emit(cli::CLI_EVENT, action.to_command());
+                }
+            }
         }));
     }
 
@@ -244,8 +347,9 @@ pub fn run() {
             lu_take_progress_files,
             lu_show_workbench,
             lu_close_progress,
+            lu_mark_cli_ready,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             use tauri::Manager as _;
 
             // G：注册「直接解析」每轮独立窗口的待解析文件暂存状态
@@ -345,13 +449,29 @@ pub fn run() {
                 );
             }
 
-            // T4-07：解析本次启动参数存入 LaunchState，前端 onMounted 经 lu_get_launch_action 拉取
-            // （避免事件早于前端监听注册的竞态；第二实例走 single-instance 回调的事件推送）
+            // 方案 A：冷启动首进程的 argv 也并入同一批次，与后续单实例转发的文件一起由 flusher 聚合下发。
+            // LaunchState 只放一个「空 parse」占位（见下），不再提前把单文件命令交给前端。
             let argv: Vec<String> = std::env::args().collect();
             let action = cli::parse_launch_args(&argv);
+            let is_direct = matches!(action, cli::LaunchAction::DirectParse(_));
+            if let cli::LaunchAction::DirectParse(ref files) = action {
+                let added = pending_setup.append(files);
+                lu_log(
+                    "info",
+                    "rust",
+                    "parse.batch.append",
+                    None,
+                    serde_json::json!({
+                        "source": "launch",
+                        "incoming": files.len(),
+                        "added": added,
+                        "batch_size": pending_setup.len(),
+                    }),
+                );
+            }
             // D.9：main 窗默认隐藏（tauri.conf visible:false）。非"直接解析"启动才显示主工作站；
             // --parse 首启由前端开进度窗，main 保持隐藏作容器（App.vue 仍挂载并处理启动意图）。
-            let main_shown = !matches!(action, cli::LaunchAction::DirectParse(_));
+            let main_shown = !is_direct;
             if main_shown {
                 if let Some(main) = app.get_webview_window("main") {
                     // 轮 I：setup 阶段 show() 可能因 webview 未就绪而失败；补 unminimize + focus 保证可见置前。
@@ -385,7 +505,19 @@ pub fn run() {
                     "argv": argv,
                 }),
             );
-            app.manage(cli::LaunchState(std::sync::Mutex::new(Some(action.to_command()))));
+            // 冷启动直解析：只给前端一个「空 parse」占位，使其既不显示 main、也不提前开只含 1 个文件的进度窗。
+            // 前端 lu_get_launch_action 会标记 frontend_ready，flusher 随后一次性下发完整批次。
+            let launch_command = if is_direct {
+                cli::CliCommand {
+                    action: "parse".into(),
+                    file_paths: Some(Vec::new()),
+                }
+            } else {
+                action.to_command()
+            };
+            app.manage(cli::LaunchState(std::sync::Mutex::new(Some(launch_command))));
+            app.manage(PendingParseState(pending_setup.clone()));
+            spawn_parse_flusher(app.handle().clone(), pending_setup.clone());
 
             Ok(())
         })

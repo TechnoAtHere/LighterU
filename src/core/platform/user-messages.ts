@@ -159,16 +159,16 @@ const TABLE: Record<string, (ctx?: Ctx) => Entry> = {
       detail: '当前没有待执行的导入文件，也没有未完成的任务文件。请先导入 PDF，或点击历史任务载入继续。',
       debugHint: 'startAll 时 pending 为空且当前任务无未终态文件。',
     }),
-  // 自动拆分（-60006）：云端拒绝后由 pipeline 自动拆分多分片并发解析并合并，用户应看到「已自动拆分」。
+  // 自动拆分：精准模式由 -60006 或本地页数预判触发，Agent 模式由 >20 页触发；两者最后都合并为一份结果。
   'split.progress': () =>
     build('info', '正在自动拆分', {
       detail: 'PDF 超过页数上限，正在自动拆分为多个分片分别解析、最后合并为完整结果……',
-      debugHint: 'pipeline 进入 runSplit 分支（-60006）。',
+      debugHint: 'pipeline 进入自动拆分分支（精准 runSplit / Agent runAgentSplit）。',
     }),
   'split.done': (c) =>
     build('success', '拆分解析完成', {
       detail: fill('已自动拆分为 {count} 个分片并合并为完整结果。', c),
-      debugHint: 'runSplit 完成。',
+      debugHint: '自动拆分合并完成（精准 runSplit / Agent runAgentSplit）。',
     }),
   'batch.progress': (c) =>
     build('info', '已开始处理', {

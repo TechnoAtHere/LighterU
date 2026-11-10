@@ -40,9 +40,15 @@ export interface MockServerHandle {
   baseUrl: string
   /** 多模态 base_url（T2-01：拼 /chat/completions） */
   multimodalBaseUrl: string
+  /** Agent 轻量解析 base_url（拼 /parse/file、/parse/{task_id}） */
+  agentBaseUrl: string
+  /** Agent 已提交的解析任务（断言自动拆分的分片数与 page_range 清理） */
+  agentSubmits: Array<{ name: string; pageRange: string | null }>
   close(): Promise<void>
   /** 已接收的上传（断言用） */
   uploads: Map<string, { name: string; size: number; polls: number }>
+  /** 已接收的 file-urls/batch 请求体（断言 extra_formats / 输出多选推导用） */
+  fileUrlBodies: Array<Record<string, unknown>>
   /** 最近一次收到的 Authorization 头（T1-05 断言用） */
   lastAuthHeader: string | null
   /** 已接收的多模态 chat/completions 调用（T2-01 断言用；仅记非 429 的成功请求） */
@@ -112,7 +118,10 @@ export async function startMockServer(opts: MockServerOptions = {}): Promise<Moc
 
   const batches = new Map<string, MockBatch>()
   const uploads: MockServerHandle['uploads'] = new Map()
+  const fileUrlBodies: MockServerHandle['fileUrlBodies'] = []
   const multimodalCalls: MockServerHandle['multimodalCalls'] = []
+  const agentSubmits: MockServerHandle['agentSubmits'] = []
+  const agentTasks = new Map<string, { name: string; uploaded: boolean }>()
   let multimodal429Left = options.multimodalFailFirst
   let multimodalAttempts = 0
   let seq = 0
@@ -174,6 +183,7 @@ export async function startMockServer(opts: MockServerOptions = {}): Promise<Moc
         if (req.method === 'POST' && path === '/api/v4/file-urls/batch') {
           if (!authOk()) return send(401, { code: 'A0202', msg: 'Token 错误，请检查 Bearer 前缀。' })
           const body = await readJson()
+          fileUrlBodies.push(body)
           const files = Array.isArray(body.files) ? (body.files as Array<Record<string, unknown>>) : []
           const name = files.length > 0 ? String(files[0]?.name ?? '') : ''
           if (!/\.pdf$/i.test(name)) return send(400, { code: '-60001', msg: `不支持的文件类型：${name}` })
@@ -311,6 +321,53 @@ export async function startMockServer(opts: MockServerOptions = {}): Promise<Moc
           return send(200, { object: 'list', data: [{ id: 'vision-model', object: 'model' }, { id: 'other-model', object: 'model' }] })
         }
 
+        // ---- 8. Agent 轻量解析（自动拆分端到端验证用）
+        if (req.method === 'POST' && path === '/api/v1/agent/parse/file') {
+          const body = await readJson()
+          const name = String(body.file_name ?? '')
+          const pageRange = typeof body.page_range === 'string' ? body.page_range : null
+          agentSubmits.push({ name, pageRange })
+          seq += 1
+          const taskId = `agent_${seq}`
+          agentTasks.set(taskId, { name, uploaded: false })
+          return send(200, {
+            code: 0,
+            data: {
+              task_id: taskId,
+              file_url: `http://127.0.0.1:${port}/agent-upload/${taskId}`,
+            },
+          })
+        }
+        const agentUpload = /^\/agent-upload\/([^/]+)$/.exec(path)
+        if (req.method === 'PUT' && agentUpload) {
+          const task = agentTasks.get(agentUpload[1])
+          if (!task) return send(404, { code: 'NOT_FOUND', msg: 'agent task 不存在' })
+          const chunks: Buffer[] = []
+          for await (const chunk of req) chunks.push(chunk as Buffer)
+          task.uploaded = Buffer.concat(chunks).length > 0
+          res.writeHead(200, { etag: '"mock-agent"' })
+          return res.end()
+        }
+        const agentStatus = /^\/api\/v1\/agent\/parse\/([^/]+)$/.exec(path)
+        if (req.method === 'GET' && agentStatus) {
+          const task = agentTasks.get(agentStatus[1])
+          if (!task) return send(200, { code: '-60012', msg: '任务不存在' })
+          return send(200, {
+            code: 0,
+            data: {
+              state: task.uploaded ? 'done' : 'waiting-file',
+              markdown_url: `http://127.0.0.1:${port}/agent-markdown/${agentStatus[1]}.md`,
+            },
+          })
+        }
+        const agentMd = /^\/agent-markdown\/([^/]+)\.md$/.exec(path)
+        if (req.method === 'GET' && agentMd) {
+          const task = agentTasks.get(agentMd[1])
+          if (!task) return send(404, { code: 'NOT_FOUND', msg: 'markdown 不存在' })
+          res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8' })
+          return res.end(`# ${task.name}\n\nAgent mock content for ${task.name}\n`)
+        }
+
         send(404, { code: 'NOT_FOUND', msg: `mock 未实现：${req.method} ${path}` })
       } catch (err) {
         send(500, { code: 'MOCK_ERROR', msg: err instanceof Error ? err.message : String(err) })
@@ -327,7 +384,10 @@ export async function startMockServer(opts: MockServerOptions = {}): Promise<Moc
     baseUrl: `http://127.0.0.1:${port}/api/v4`,
     /** 多模态 base_url（T2-01：拼 /chat/completions） */
     multimodalBaseUrl: `http://127.0.0.1:${port}/v1`,
+    agentBaseUrl: `http://127.0.0.1:${port}/api/v1/agent`,
     uploads,
+    fileUrlBodies,
+    agentSubmits,
     multimodalCalls,
     get multimodalAttempts(): number {
       return multimodalAttempts

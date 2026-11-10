@@ -1,5 +1,5 @@
 // 行内「图片解析」共用执行器（工作站 / 进度窗复用）。
-// 只负责对某个已产出目录重跑图片描述；UI 状态（蓝/绿）由 FileList 维护。
+// 只负责对某个已产出目录重跑图片描述；UI 状态（蓝/绿/红）由 FileList 维护。
 import { rerunCaption } from './rerun'
 import { resolveActivePromptContent } from './prompts'
 import { createHttpTransport } from '../platform/http'
@@ -26,6 +26,7 @@ export async function runJobCaption(
   cfg: AppConfig,
   job: Job,
   onLog?: (message: string) => void,
+  signal?: AbortSignal,
 ): Promise<JobCaptionOutcome> {
   if (!job.outputDir) {
     return { ok: false, skipped: null, described: 0, failed: 0, error: '该文件尚无输出目录' }
@@ -40,6 +41,8 @@ export async function runJobCaption(
       enabledOverride: true,
       customUserPrompt: resolveActivePromptContent(cfg.multimodal),
       onLog,
+      // 透传取消信号：rerunCaption → runCaption → runPool 会停止领取新图并中止在途请求
+      signal,
     },
   )
   return {

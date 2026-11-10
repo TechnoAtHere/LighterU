@@ -1,8 +1,11 @@
-//! 右键菜单注册（T4-01 + D.8，P-5：HKCU 每用户，免管理员，Rust 侧写注册表；仅 Windows）。
+//! 右键菜单注册（T4-01 + D.13，P-5：HKCU 每用户，免管理员，Rust 侧写注册表；仅 Windows）。
 //!
-//! D.8 变更：右键只保留**一项**「直接解析」（原「解析到…」目录菜单随小窗退役移除）。
-//! - 文件右键：`HKCU\Software\Classes\*\shell\LighterU` → command `"{exe}" --parse %*`
-//! - `MultiSelectModel = "Player"`：多选文件时**一次**传入所有路径（`%*` 展开全部选中项，含空格的路径由 shell 自动加引号）。
+//! 右键只保留**一项**「直接解析」（原「解析到…」目录菜单随小窗退役移除）。
+//! - 文件右键：`HKCU\Software\Classes\*\shell\LighterU` → command `"{exe}" --parse "%1"`。
+//! - **不设 MultiSelectModel**：早期试过 `Player` + `%*`，实测本机 `%*` 展开为空（无任何文件参数、
+//!   回退成打开工作站），故 D.13 回退为稳定的单文件 `%1`。
+//! - 多选文件由 Windows **逐文件启动进程**，每个 argv 仅带一个路径；多个进程/单实例转发的文件路径
+//!   在 Rust 侧经 `parse_batch::PendingParse` 聚成一批后统一下发（方案 A），不依赖 Explorer 多选模型。
 //! - 首次运行 + 每次启动都幂等刷新（lib.rs setup 无条件调用），保证 command 始终指向当前 release exe。
 //! - 注册时顺带清理旧版遗留：`Directory\shell\LighterU`（原「解析到…」目录菜单）与
 //!   `*\shell\BetterMinerU` / `Directory\shell\BetterMinerU`（改名前的旧键，避免右键重复「直接解析」）。

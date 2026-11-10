@@ -147,8 +147,8 @@ export interface AppConfig {
 
 // ---------------------------------------------------------------- 客户端（M02）
 
-/** 服务端 state 归一后的云端状态（plan/04 P-1 state 全集） */
-export type CloudState = 'pending' | 'running' | 'done' | 'failed' | 'unknown'
+/** 服务端 state 归一后的云端状态（官方 v4 响应：pending / running / converting / done / failed） */
+export type CloudState = 'pending' | 'running' | 'converting' | 'done' | 'failed' | 'unknown'
 
 export interface TaskStatus {
   taskId: string
@@ -213,6 +213,11 @@ export interface PipelineEvent {
   message?: string
   extractedPages?: number
   totalPages?: number
+  /** 服务端归一状态（pending / running / converting / done / failed） */
+  cloudState?: CloudState
+  /** 自动拆分：当前分片（1-based）与总片数，用于状态列显示「解析中（1/4）」 */
+  partIndex?: number
+  partTotal?: number
 }
 
 export type PipelineCallback = (event: PipelineEvent) => void
@@ -262,6 +267,17 @@ export interface Job {
   markdownPath?: string
   /** D-42：期望的输出目录覆盖（行内修改/解析到…设置）；下次执行作为 pipeline destDirOverride 传入 */
   destDirOverride?: string
+  /** 运行时进度快照（云端状态 / 自动拆分分片 / 页数），由 pipeline 的 progress 事件写入，不落库 */
+  progress?: JobProgress
+}
+
+/** 任务行状态列的实时进度信息 */
+export interface JobProgress {
+  cloudState?: CloudState
+  partIndex?: number
+  partTotal?: number
+  extractedPages?: number
+  totalPages?: number
 }
 
 /** T3-06/07 任务队列与重试配置组（阶段 3 新增） */

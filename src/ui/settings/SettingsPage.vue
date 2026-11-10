@@ -19,10 +19,26 @@ type GroupKey = "mineru" | "caption" | "output" | "log" | "about";
 
 const props = defineProps<{ initialGroup?: GroupKey }>();
 
-const emit = defineEmits<{ (e: "close"): void }>();
+const emit = defineEmits<{
+  (e: "close"): void;
+  /** 保存后把当前配置同步给 TaskManager，使后续开启/重试采用当时的方案 */
+  (e: "saved", config: AppConfig): void;
+}>();
 
 const GITHUB_URL = "https://github.com/TechnoAtHere/LighterU";
 const GITEE_URL = "https://gitee.com/ATWWW/LighterU";
+const MINERU_URL = "https://mineru.net/";
+/** 关于页外链：三行（仓库 / 反馈 / 发布）各自对应 GitHub 与 Gitee 两个平台。 */
+const LINKS = {
+  github: GITHUB_URL,
+  gitee: GITEE_URL,
+  githubIssues: `${GITHUB_URL}/issues`,
+  giteeIssues: `${GITEE_URL}/issues`,
+  githubReleases: `${GITHUB_URL}/releases`,
+  giteeReleases: `${GITEE_URL}/releases`,
+  mineru: MINERU_URL,
+  license: `${GITHUB_URL}/blob/main/LICENSE`,
+};
 const version = typeof __LU_VERSION__ !== "undefined" ? __LU_VERSION__ : "dev";
 
 /** 用系统默认浏览器打开外部链接；非 Tauri 回退 window.open */
@@ -92,6 +108,8 @@ async function save(): Promise<void> {
   try {
     await saveConfig({ store: createConfigStore(), secrets: createSecretsAdapter() }, cfg.value);
     msg.value = "已保存";
+    // JSON 往返得到纯对象，避免把 Vue reactive Proxy 交给 TaskManager（后续持久化克隆会失败）
+    emit("saved", JSON.parse(JSON.stringify(cfg.value)) as AppConfig);
   } catch (err) {
     msg.value = `保存失败：${err instanceof Error ? err.message : String(err)}`;
   }
@@ -170,13 +188,56 @@ async function saveSecret(which: "mineruToken" | "multimodalApiKey", value: stri
           <SettingsOutput v-else-if="active === 'output'" :cfg="cfg" :on-patch="onPatch" />
           <SettingsLog v-else-if="active === 'log'" :cfg="cfg" :on-patch="onPatch" />
           <div v-else-if="active === 'about'" class="about">
-            <h3 class="about-title">LighterU <span class="about-ver">v{{ version }}</span></h3>
-            <p class="about-desc">更轻、更快、链条更短地将文件转换为 AI 可读形式的 Windows 桌面端 MinerU 解析客户端。</p>
-            <div class="about-links">
-              <button class="about-link" @click="openExternal(GITHUB_URL)">GitHub</button>
-              <button class="about-link" @click="openExternal(GITEE_URL)">Gitee</button>
-            </div>
-            <p class="about-note">非官方客户端，与 MinerU / OpenDataLab 无隶属关系。MIT License。</p>
+            <!-- 1. 产品信息 -->
+            <section class="about-block about-first">
+              <div class="about-hero">
+                <img class="about-logo" :src="logoUrl" alt="LighterU" />
+                <div class="about-hero-text">
+                  <h3 class="about-title">LighterU <span class="about-ver">v{{ version }}</span></h3>
+                  <p class="about-desc">更轻、更快、链条更短地将文件转换为 AI 可读形式的 Windows 桌面端 MinerU 解析客户端。</p>
+                </div>
+              </div>
+              <p class="about-note">非官方第三方客户端，与 MinerU / OpenDataLab 无隶属或背书关系，不包含其源代码。</p>
+            </section>
+
+            <!-- 2. 相关链接：三行（代码仓库 / 问题反馈 / 版本发布） -->
+            <section class="about-block">
+              <h4 class="about-sub">相关链接</h4>
+              <div class="about-row">
+                <span class="about-row-label">代码仓库</span>
+                <div class="about-links">
+                  <button class="about-link" @click="openExternal(LINKS.github)">GitHub</button>
+                  <button class="about-link" @click="openExternal(LINKS.gitee)">Gitee</button>
+                </div>
+              </div>
+              <div class="about-row">
+                <span class="about-row-label">问题反馈</span>
+                <div class="about-links">
+                  <button class="about-link" @click="openExternal(LINKS.githubIssues)">GitHub Issues</button>
+                  <button class="about-link" @click="openExternal(LINKS.giteeIssues)">Gitee Issues</button>
+                </div>
+              </div>
+              <div class="about-row">
+                <span class="about-row-label">版本发布</span>
+                <div class="about-links">
+                  <button class="about-link" @click="openExternal(LINKS.githubReleases)">GitHub Releases</button>
+                  <button class="about-link" @click="openExternal(LINKS.giteeReleases)">Gitee 发行版</button>
+                </div>
+              </div>
+              <p class="about-extra">
+                解析服务官网：<button class="about-inline" @click="openExternal(LINKS.mineru)">mineru.net</button>
+              </p>
+              <p class="about-tip">Gitee 链接在国内访问更快，但下载附件、提交反馈等操作通常需要登录 Gitee 账号。</p>
+            </section>
+
+            <!-- 3. 开源许可证 -->
+            <section class="about-block">
+              <h4 class="about-sub">开源许可证</h4>
+              <p class="about-license">
+                本项目以 <strong>MIT License</strong> 开源，可自由使用、复制、修改与分发，须保留版权与许可声明。第三方依赖各自遵循其许可证；MinerU 相关的许可与署名说明见仓库 NOTICE。
+              </p>
+              <button class="about-link" @click="openExternal(LINKS.license)">查看 LICENSE</button>
+            </section>
           </div>
         </template>
       </section>
@@ -230,14 +291,26 @@ async function saveSecret(which: "mineruToken" | "multimodalApiKey", value: stri
 .sp-content { flex: 1; min-width: 0; overflow-y: auto; padding: 14px 18px; }
 .sp-msg { margin: 0 0 10px; font-size: 12px; color: var(--lu-success-ink, #009e80); }
 .sp-loading { font-size: 13px; color: #999; }
-.about { max-width: 560px; }
-.about-title { font-size: 15px; margin: 0 0 8px; }
+.about { max-width: 600px; }
+.about-block { border-top: 1px solid #ececec; padding: 14px 0 4px; }
+.about-first { border-top: none; padding-top: 0; }
+.about-hero { display: flex; align-items: center; gap: 14px; margin-bottom: 10px; }
+.about-logo { width: 46px; height: 52px; object-fit: contain; flex-shrink: 0; }
+.about-hero-text { min-width: 0; }
+.about-title { font-size: 16px; margin: 0 0 4px; }
 .about-ver { font-size: 12px; font-weight: 400; color: #8a94a6; margin-left: 6px; }
-.about-desc { font-size: 13px; color: #4b5563; line-height: 1.6; margin: 0 0 14px; }
-.about-links { display: flex; gap: 8px; margin-bottom: 14px; }
+.about-desc { font-size: 13px; color: #4b5563; line-height: 1.6; margin: 0; }
+.about-sub { font-size: 13px; font-weight: 600; color: var(--lu-primary, #0e8afe); margin: 0 0 10px; }
+.about-row { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+.about-row-label { flex: 0 0 72px; font-size: 12px; color: #8a94a6; }
+.about-links { display: flex; flex-wrap: wrap; gap: 8px; }
 .about-link { border: 1px solid #d4d4d4; background: #fff; color: #0f0f0f; border-radius: 8px; padding: 0.4em 0.9em; font-size: 13px; cursor: pointer; }
-.about-link:hover { border-color: var(--lu-primary, #0e8afe); color: var(--lu-primary, #0e8afe); }
-.about-note { font-size: 12px; color: #8a94a6; margin: 0; }
+.about-link:hover { border-color: var(--lu-primary, #0e8afe); color: var(--lu-primary, #0e8afe); background: #f2f8ff; }
+.about-note { font-size: 12px; color: #8a94a6; margin: 0; line-height: 1.6; }
+.about-extra { font-size: 12px; color: #6b7280; margin: 12px 0 0; }
+.about-inline { border: none; background: none; padding: 0; color: var(--lu-primary, #0e8afe); font-size: 12px; cursor: pointer; text-decoration: underline; }
+.about-tip { font-size: 12px; line-height: 1.6; margin: 10px 0 0; padding: 8px 10px; border: 1px solid #f0d9a8; border-radius: 8px; background: #fff8e8; color: #7a5a12; }
+.about-license { font-size: 13px; color: #4b5563; line-height: 1.7; margin: 0 0 10px; }
 @media (prefers-color-scheme: dark) {
   .settings { color: #f6f6f6; }
   .sp-top { background: #1f1f1f; border-bottom-color: #3a3a3a; }
@@ -249,8 +322,12 @@ async function saveSecret(which: "mineruToken" | "multimodalApiKey", value: stri
   .sp-nav-item { color: #ddd; }
   .sp-nav-item:hover { background: #243044; }
   .sp-nav-search input { background: #2c2c2c; border-color: #444; color: #f6f6f6; }
-  .about-desc { color: #cbd5e1; }
+  .about-block { border-top-color: #333; }
+  .about-desc, .about-license { color: #cbd5e1; }
+  .about-sub { color: #8fb0f0; }
   .about-link { background: #2c2c2c; border-color: #444; color: #f6f6f6; }
-  .about-note, .about-ver { color: #9aa3af; }
+  .about-link:hover { background: #243044; }
+  .about-note, .about-ver, .about-row-label, .about-extra { color: #9aa3af; }
+  .about-tip { border-color: #5c4a1f; background: #332a12; color: #e8cf8f; }
 }
 </style>

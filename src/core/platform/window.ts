@@ -1,7 +1,7 @@
-// platform · 多窗口助手（T4-11/T4-06）：打开小窗 / 进度窗，跨窗口传文件用事件握手。
-// 窗口在 tauri.conf.json 预定义（visible:false 启动隐藏）；此处按 label 取出并 show/setFocus。
+// platform · 多窗口助手（T4-11/T4-06）：进度窗经 Rust 命令 lu_open_progress 创建，
+// 待解析文件由 Rust 侧按 window label 暂存，进度窗挂载后用 lu_take_progress_files 取走（G·3）。
 // 非 Tauri（浏览器 dev / selftest）降级为 no-op，不报错。
-// 跨窗口「同一事件源」：各窗口经 lu: 事件（T4-08）同步显示；直接解析的文件经 lu:direct-parse 握手传递。
+// 跨窗口「同一事件源」：各窗口经 lu: 事件（T4-08）同步状态；直接解析文件不再走 lu:direct-parse 事件握手。
 
 import { isTauri } from './env'
 import { log } from './logger'

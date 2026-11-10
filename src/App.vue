@@ -28,7 +28,7 @@ import SettingsPage from "./ui/settings/SettingsPage.vue";
 import Icon from "./ui/components/Icon.vue";
 import logoUrl from "./assets/logo.svg";
 import type { Store, TaskRow, TaskFileRow } from "./core/store";
-import type { Job } from "./core/types";
+import type { AppConfig, Job } from "./core/types";
 
 // D.10：manager 用 shallowRef 而非 ref——TaskManager 是含 config/jobs/queue 的复杂类实例，
 // 若用 ref 会被 Vue 深度 reactivize，导致 config 变成 reactive Proxy，stripSecrets→structuredClone 抛
@@ -67,7 +67,7 @@ const elapsedByFile = ref<Record<string, number>>({});
 let unEvents: Array<() => void> = [];
 /** D.6：状态轮询兜底（事件未达时也能刷新，避免"卡等待/按钮卡死"） */
 let pollTimer: number | null = null;
-/** T5-F：右键多选时 shell 一次只转一个文件的 parse 事件；累积防抖后一次性开进度窗，合成单任务批量解析 */
+/** 方案 A：shell 用 "%1" 逐文件启动进程 → Rust 侧聚合整批后一次下发；此处防抖仅作为二次保险 */
 const parseBuffer: string[] = [];
 let parseFlushTimer: number | null = null;
 /** 防止「图片描述未配置」提示在分批时重复刷屏（本轮会话内只提示一次） */
@@ -137,6 +137,26 @@ onMounted(async () => {
     }
   }
 
+  // 方案 A：CLI 订阅与就绪标记必须早于配置/DB 初始化——冷启动 main 隐藏时，
+  // 初始化较慢或失败都不应让 Rust 侧下发的整批 parse 事件无人接收。
+  // onReady 在 Tauri listen 真正注册后触发，此时才标记 frontend_ready，避免事件早于订阅丢失。
+  unEvents.push(
+    onCliCommand(
+      (cmd) => handleCliCommand(cmd.action, cmd.file_paths ?? []),
+      () => {
+        if (!isTauri()) return;
+        void (async () => {
+          try {
+            const { invoke } = await import("@tauri-apps/api/core");
+            await invoke("lu_mark_cli_ready");
+          } catch {
+            // 忽略：Rust 侧另有 10s 就绪兜底
+          }
+        })();
+      },
+    ),
+  );
+
   try {
     const config = await loadConfig({ store: createConfigStore(), secrets: createSecretsAdapter() });
     // 轮 G 日志重构：把调试日志开关/容量上限应用到 logger（默认关闭，避免大文件）
@@ -193,17 +213,18 @@ onMounted(async () => {
         }
       }),
       onTaskProgress((p) => {
-        if (p.fileId) elapsedByFile.value = { ...elapsedByFile.value, [p.fileId]: p.elapsedMs };
+        if (!p.fileId) return;
+        elapsedByFile.value = { ...elapsedByFile.value, [p.fileId]: p.elapsedMs };
+        // 进度事件同时更新 Job.progress（拆分分片 / 云端状态），需刷新该行视图
+        const tm2 = manager.value;
+        const job = tm2?.getJob(p.fileId);
+        if (job) active.value = { ...active.value, [p.fileId]: { ...job } };
       }),
       // onLogLine（pipeline 进度/失败）仅转发到调试日志黑盒；用户通知由核心模块经 user-feed 生成
       onLogLine((p) => {
         if (p.level === "info") log("debug", "pipeline", "progress", { message: p.message });
       }),
     );
-
-    // T4-07/右键：第二实例 CLI 命令（推送）。首次启动意图已在 onMounted 开头处理，
-    // 以免配置/DB 初始化失败时丢失 --parse。
-    unEvents.push(onCliCommand((cmd) => handleCliCommand(cmd.action, cmd.file_paths ?? [])));
 
     // D-45：历史异步同步（100ms 去抖）
     let histTimer: number | null = null;
@@ -553,9 +574,26 @@ function manualRefresh(): void {
   }, 1000);
 }
 
+/** 设置页保存后即时同步内存配置（无需等下次落盘重载） */
+function onSettingsSaved(config: AppConfig): void {
+  manager.value?.applyConfig(config);
+}
+
+/** 让下次执行采用「当时」的配置方案：设置页可能刚改过，需同步到 TaskManager 内存态 */
+async function syncTaskConfig(): Promise<void> {
+  const tm = manager.value;
+  if (!tm) return;
+  try {
+    tm.applyConfig(await loadConfig({ store: createConfigStore(), secrets: createSecretsAdapter() }));
+  } catch {
+    // 重载失败沿用当前配置
+  }
+}
+
 async function retryFile(taskId: string, fileId: string): Promise<void> {
   const tm = manager.value;
   if (!tm) return;
+  await syncTaskConfig();
   try {
     await tm.retryFile(taskId, fileId);
     busy.value = true;
@@ -569,6 +607,7 @@ async function retryFile(taskId: string, fileId: string): Promise<void> {
 async function retryHistoryTask(taskId: string): Promise<void> {
   const tm = manager.value;
   if (!tm) return;
+  await syncTaskConfig();
   const rid = `retry-${taskId}`;
   // 收集本次要重新提交的失败文件清单（过程型通知展示具体文件）
   const failedNames = tm
@@ -607,7 +646,7 @@ function handleCliCommand(action: string, filePaths: string[]): void {
     case "parse":
       if (filePaths.length > 0) {
         log("info", "app", "cliCommand.parse", { fileCount: filePaths.length });
-        // T5-F：多选 → shell 逐文件转来多条 parse 事件；累积去重 + 防抖 250ms 后一次性开进度窗（合成单任务）
+        // 方案 A：Rust 侧已聚成整批；此处去重 + 250ms 防抖仅作二次保险（兼容连续两轮右键）
         for (const p of filePaths) if (!parseBuffer.includes(p)) parseBuffer.push(p);
         if (parseFlushTimer != null) window.clearTimeout(parseFlushTimer);
         parseFlushTimer = window.setTimeout(() => {
@@ -699,7 +738,7 @@ function onFileRefresh(): void {
 }
 
 /** 行内「图片解析」：对该文件已产出的输出目录单独重跑图片描述（使用当前选中提示词方案） */
-async function onFileCaption(job: Job): Promise<boolean> {
+async function onFileCaption(job: Job, signal?: AbortSignal): Promise<boolean> {
   const tm = manager.value;
   if (!tm) return false;
   if (!job.outputDir) {
@@ -732,7 +771,7 @@ async function onFileCaption(job: Job): Promise<boolean> {
     const model = cfg.multimodal.model?.trim() || "未指定";
     notify("caption.started", { model, dir: dirKey });
     log("info", "caption", "manual.start", { dir: dirKey, model, provider: cfg.multimodal.baseUrl });
-    const result = await runJobCaption(cfg, job, (m) => log("info", "caption", "file.rerun", { message: m }));
+    const result = await runJobCaption(cfg, job, (m) => log("info", "caption", "file.rerun", { message: m }), signal);
     if (result.skipped) {
       notify("generic.info", { message: `图片解析已跳过：${result.skipped}` });
     } else {
@@ -741,6 +780,8 @@ async function onFileCaption(job: Job): Promise<boolean> {
     log("info", "caption", "manual.done", { dir: dirKey, model, described: result.described, failed: result.failed });
     return result.ok;
   } catch (err) {
+    // 用户主动取消不应弹失败通知；finally 仍会清理单飞标记
+    if (signal?.aborted) return false;
     notify("generic.error", { message: `图片解析失败：${err instanceof Error ? err.message : String(err)}` });
     return false;
   } finally {
@@ -1032,7 +1073,7 @@ const hasActive = computed<boolean>(() => activeList.value.some((j) => !TERMINAL
 </script>
 
 <template>
-  <SettingsPage v-if="showSettings" :initial-group="settingsGroup" @close="showSettings = false" />
+  <SettingsPage v-if="showSettings" :initial-group="settingsGroup" @close="showSettings = false" @saved="onSettingsSaved" />
   <main v-else class="wb">
     <header class="topbar">
       <div class="tb-left">
@@ -1589,14 +1630,18 @@ const hasActive = computed<boolean>(() => activeList.value.some((j) => !TERMINAL
   border-bottom: 1px solid #f1f3f5;
   flex-shrink: 0;
 }
+/* 与 FileList 任务行保持同一套可拉伸列宽，避免窗口放大时表头与数据行错位。 */
 .col-name {
-  flex: 0 1 34%;
+  flex: 1 1 34%;
+  min-width: 4ch;
 }
 .col-status {
-  flex: 0 0 64px;
+  flex: 1 1 22%;
+  min-width: 2ch;
 }
 .col-out {
-  flex: 1;
+  flex: 1 1 44%;
+  min-width: 4ch;
 }
 .col-ops {
   flex-shrink: 0;
@@ -1644,7 +1689,7 @@ const hasActive = computed<boolean>(() => activeList.value.some((j) => !TERMINAL
 .prow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   padding: 6px 10px;
   font-size: 13px;
   border-bottom: 1px solid #f0f0f0;
@@ -1657,16 +1702,20 @@ const hasActive = computed<boolean>(() => activeList.value.some((j) => !TERMINAL
   flex-shrink: 0;
 }
 .p-name {
-  flex: 0 1 40%;
-  min-width: 0;
+  flex: 1 1 34%;
+  min-width: 4ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .p-status {
-  flex-shrink: 0;
+  flex: 1 1 22%;
+  min-width: 2ch;
   font-size: 12px;
   color: #666;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .p-status.active {
   color: var(--lu-primary, #0e8afe);
@@ -1681,8 +1730,8 @@ const hasActive = computed<boolean>(() => activeList.value.some((j) => !TERMINAL
   color: var(--lu-warning, #f7903d);
 }
 .p-out {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 44%;
+  min-width: 4ch;
   font-size: 11px;
   color: #999;
   overflow: hidden;

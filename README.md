@@ -12,7 +12,7 @@
   <img alt="platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?style=flat-square" />
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square" />
   <img alt="Vue" src="https://img.shields.io/badge/Vue-3-42B883?style=flat-square" />
-  <img alt="version" src="https://img.shields.io/badge/version-0.3.0-blue?style=flat-square" />
+  <img alt="version" src="https://img.shields.io/badge/version-0.3.1-blue?style=flat-square" />
   <img alt="license" src="https://img.shields.io/badge/license-MIT-3DA639?style=flat-square" />
 </p>
 
@@ -80,7 +80,7 @@ After the first launch, configure as needed:
 
 1. **Parsing service** (choose one)
    - **Precise parsing**: enter your [mineru.net](https://mineru.net) Token in Settings → MinerU (as required by MinerU, tokens are valid for 90 days);
-   - **Agent lightweight parsing**: no token required; larger single-file limits (≤10MB / ≤20 pages); Markdown output only.
+   - **Agent lightweight parsing**: no token required; ≤10MB per upload. PDFs over 20 pages are automatically split into 20-page parts, parsed sequentially, and merged into one Markdown file.
 2. **Image captioning** (optional): set the Base URL, model name, and API key of an OpenAI-compatible service in Settings → Image Captioning.
 3. **Output preferences**: choose default formats, folder, and image retention policy in Settings → Output.
 
@@ -103,7 +103,7 @@ After the first launch, configure as needed:
 | Token invalid / expired (A0202) | Re-issue a token on mineru.net and save it; tokens are valid for 90 days |
 | 403 Forbidden | Check the token is saved and has no spaces/newlines; verify the API base URL |
 | 429 / queuing / rate limit | Retry later; Agent mode is IP rate-limited; the precise API has daily and per-minute quotas |
-| File too large | Precise: ≤200MB, ≤200 pages; Agent: ≤10MB, ≤20 pages. Split or compress the file |
+| File too large | Precise: ≤200MB, ≤200 pages; Agent: ≤10MB per upload (long PDFs auto-split into 20-page parts). Compress the file or switch to Precise |
 | Garbled or missing content | Complex layouts, vertical text, and formulas are limited by the model; try another model version (e.g. `vlm`) |
 
 - 📃 See the official MinerU documentation: https://mineru.net/apiManage/docs
@@ -122,7 +122,7 @@ After the first launch, configure as needed:
 -  Quotas, rate limits, and size/page limits follow the official docs and may change.
 -  Tokens expire after **90 days** and must be re-issued.
 -  Parsing quality varies by document; 100% layout fidelity is not guaranteed.
--  Agent mode is Markdown-only and single-file, with stricter concurrency and other limits.
+-  Agent mode is Markdown-only (long PDFs are auto-split into parts and merged), with stricter IP rate limits.
 
 
 ### Other
@@ -163,7 +163,7 @@ npm run tauri build    # production
 
 ```bash
 npm run typecheck
-npm run selftest       # 75/75
+npm run selftest       # 82/82
 cd src-tauri && cargo check
 ```
 
@@ -193,8 +193,8 @@ cd src-tauri && cargo check
 
 ## 👤 Author
 
-- Techno
+Techno
 - <a href="https://github.com/TechnoAtHere">GitHub Profile</a>
 - <a href="https://gitee.com/ATWWW">Gitee Profile</a>
 
-<p align="center">❤️ Made by <a href="https://github.com/TechnoAtHere">Techno ❤️ </a></p>
+<p align="center">❤️ Made by <a href="https://github.com/TechnoAtHere">Techno  </a>❤️ </p>
